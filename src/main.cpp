@@ -10419,11 +10419,15 @@ if (lookupVendorCache(
   snprintf(target, sizeof(target), "%02X%02X%02X", record->mac[0], record->mac[1], record->mac[2]);
 
   // 3. Binary Search the SD Card
+  //    Fixed 32-byte records: missing/empty/mis-sized databases must fail
+  //    safely instead of underflowing the record count and seeking past EOF.
   bool foundInDB = false;
   FsFile file = sd.open("/oui_db.txt", O_READ);
-  if (file) { 
+  if (file) {
+    uint64_t db_size = file.fileSize();
+    if (db_size > 0 && (db_size % 32) == 0) {
     uint32_t low = 0;
-    uint32_t high = (file.fileSize() / 32) - 1;
+    uint32_t high = (uint32_t)((db_size / 32) - 1);
 
     while (low <= high) {
       uint32_t mid = low + (high - low) / 2;
@@ -10466,6 +10470,7 @@ if (lookupVendorCache(
       else {
         low = mid + 1;
       }
+    }
     }
     file.close();
   }
