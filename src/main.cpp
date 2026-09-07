@@ -69,7 +69,7 @@ int target_rssi = 0;
 SdFs sd;
 
 // ==========================================
-// WAVE HOUND LAYER 2 & LIVE DUMP GLOBALS
+// WAVE HOUND PCAP & LIVE DUMP GLOBALS
 // ==========================================
 #define MAX_LEAK_STR_LEN 512
 #define MAX_LIVE_CAPTURE 1536
@@ -107,7 +107,7 @@ uint8_t  leak_hash_idx = 0;
 // DUAL-CORE MESSAGE QUEUES & UNIFIED STRUCT
 // ------------------------------------------
 // Shared metadata — single source of truth
-struct Layer2Meta {
+struct PacketMeta {
     uint32_t timestamp;
     uint32_t flow_hash;
     uint16_t src_port;
@@ -129,7 +129,7 @@ struct Layer2Meta {
 };
 
 struct LiveCaptureEvent {
-    Layer2Meta meta;
+    PacketMeta meta;
     uint16_t   raw_len;                 // bytes in raw_payload, up to MAX_LIVE_CAPTURE
     uint8_t    raw_payload[MAX_LIVE_CAPTURE];
 };
@@ -138,14 +138,14 @@ struct LiveCaptureEvent {
 LiveCaptureEvent* ptr_isr_evt = nullptr;
 LiveCaptureEvent* ptr_core1_evt = nullptr;
 
-struct Layer2Capture {
-    Layer2Meta meta;
+struct PacketCapture {
+    PacketMeta meta;
     uint16_t   retained_len;
     char    text[MAX_LEAK_STR_LEN];
 };
 
 struct LeakHistoryEntry {
-    Layer2Capture leak;           // Uses the unified struct
+    PacketCapture leak;           // Uses the unified struct
     uint32_t first_seen;          // 4 bytes 
     uint32_t flow_hash;           // 4 bytes (Added for tracking Core 1 hits)
     char     src_vendor[16];      // 16 bytes
@@ -165,12 +165,12 @@ enum LeakSortMode {
 LeakSortMode currentLeakSort = SORT_LEAK_AGE; // Default
 
 // ==========================================
-// LAYER 2 WATERFALL GLOBALS
+// PCAP WATERFALL GLOBALS
 // ==========================================
-volatile uint32_t l2_bytes_tick = 0;
-uint32_t l2_bytes_render = 0;
+volatile uint32_t capture_bytes_tick = 0;
+uint32_t capture_bytes_render = 0;
 #define MAX_TERMINAL_LINES 5
-Layer2Capture terminal_history[MAX_TERMINAL_LINES];
+PacketCapture terminal_history[MAX_TERMINAL_LINES];
 uint16_t terminal_hits[MAX_TERMINAL_LINES] = {0};
 uint32_t terminal_first_seen[MAX_TERMINAL_LINES] = {0};
 
@@ -181,7 +181,7 @@ volatile uint32_t ui_dropped_packets = 0;
 // ISR-side (Core 0) — deauth + crypto/WEP interceptors
 volatile uint32_t leak_isr_attempts = 0;
 volatile uint32_t leak_isr_dropped  = 0;
-// ISR-side Layer2 funnel diagnostics
+// ISR-side PCAP funnel diagnostics
 volatile uint32_t leak_funnel_seen       = 0;
 volatile uint32_t leak_funnel_suppressed = 0;
 volatile uint32_t leak_funnel_shipped    = 0;
@@ -322,7 +322,7 @@ const int PROBES_PER_PAGE = 5;
 // ==========================================
 // RADIO MODE STATE
 // ==========================================
-enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS, RADIO_LAYER2 };
+enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS, RADIO_PCAP };
 RadioMode currentRadioMode = RADIO_WIFI;
 
 // ==========================================
@@ -7667,7 +7667,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     return; // EXIT EARLY: Do not let Management frames hit the bandwidth math!
   }
   // ==========================================
-  // L2 handling:
+  // PCAP handling:
   // ==========================================
   // 1. MASTER FRAME FILTER (Data & Deauths)
   // ==========================================
@@ -7690,8 +7690,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           reason_code = payload[24] | (payload[25] << 8);
       }
 
-      Layer2Capture leak;
-      memset(&leak, 0, sizeof(Layer2Capture));
+      PacketCapture leak;
+      memset(&leak, 0, sizeof(PacketCapture));
       
       leak.meta.timestamp = now_ms;
       leak.meta.frame_length = pkt->rx_ctrl.sig_len;
@@ -7722,11 +7722,11 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   }
 
   // ==========================================
-  // 3. LEAKY LAYER 2 CLEARTEXT EXTRACTOR
+  // 3. LEAKY PCAP CLEARTEXT EXTRACTOR
   // ==========================================
-  if (currentRadioMode == RADIO_LAYER2) { // <-- THE CRITICAL GATE
+  if (currentRadioMode == RADIO_PCAP) { // <-- THE CRITICAL GATE
       // 1. TALLY ABSOLUTE RF VOLUME (Before the gate!)
-      l2_bytes_tick += pkt->rx_ctrl.sig_len;
+      capture_bytes_tick += pkt->rx_ctrl.sig_len;
       
       bool is_protected = (payload[1] & 0x40) != 0;
       
@@ -8031,7 +8031,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       static uint32_t suppressed = 0;
                       suppressed++;
                       if (suppressed % 20 == 1) {
-                          //Serial.printf("[L2-DEDUP] Cooldown suppressed repeat (hash=0x%08X, total=%u)\n", current_hash, suppressed);
+                          //Serial.printf("[PCAP-DEDUP] Cooldown suppressed repeat (hash=0x%08X, total=%u)\n", current_hash, suppressed);
                       }
                   }
               } else {
@@ -8208,8 +8208,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   
                   if (should_alert_crypto(payload + 10, payload + 4, now_ms)) {
                       
-                      Layer2Capture leak;
-                      memset(&leak, 0, sizeof(Layer2Capture));
+                      PacketCapture leak;
+                      memset(&leak, 0, sizeof(PacketCapture));
                       
                       leak.meta.timestamp = now_ms;
                       leak.meta.frame_length = pkt->rx_ctrl.sig_len;
@@ -8893,11 +8893,11 @@ if (custom_extracted) {
     // =========================================================
     // Create the compact persistent/UI object ONLY after parsing
     // =========================================================
-    Layer2Capture l2_cap;
-    memset(&l2_cap, 0, sizeof(Layer2Capture));
+    PacketCapture pcap;
+    memset(&pcap, 0, sizeof(PacketCapture));
 
     // Copy packet metadata from the full-payload transport event
-    l2_cap.meta = live_evt.meta;
+    pcap.meta = live_evt.meta;
 
     // =========================================================
     // Copy parsed text into persistent storage.
@@ -8905,10 +8905,10 @@ if (custom_extracted) {
     // =========================================================
     size_t text_len = strnlen(temp_text, MAX_LEAK_STR_LEN - 1);
 
-    l2_cap.retained_len = (uint16_t)text_len; // <--- INJECT THIS LINE
+    pcap.retained_len = (uint16_t)text_len; // <--- INJECT THIS LINE
 
-    memcpy(l2_cap.text, temp_text, text_len);
-    l2_cap.text[text_len] = '\0';
+    memcpy(pcap.text, temp_text, text_len);
+    pcap.text[text_len] = '\0';
 
     // =========================================================
     // High-Value Triage
@@ -8928,12 +8928,12 @@ if (custom_extracted) {
         strcasestr(temp_text, "rtsp://") ||
         strcasestr(temp_text, "tasmota")) {
 
-        l2_cap.meta.is_high_value = true;
+        pcap.meta.is_high_value = true;
 
        // if (leakQueue != NULL) {
        //     leak_core1_attempts++;
 
-       // if (xQueueSend(leakQueue, &l2_cap, 0) != pdTRUE) {
+       // if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
        //     leak_core1_dropped++;
        // }
      //}
@@ -8942,8 +8942,8 @@ if (custom_extracted) {
     // =========================================================
     // Copy final parsed text into the compact UI union
     // =========================================================
-    //strncpy(l2_cap.text, temp_text, MAX_LEAK_STR_LEN - 1);
-    //l2_cap.text[MAX_LEAK_STR_LEN - 1] = '\0';
+    //strncpy(pcap.text, temp_text, MAX_LEAK_STR_LEN - 1);
+    //pcap.text[MAX_LEAK_STR_LEN - 1] = '\0';
 
     // =========================================================
     // Send compact object to the UI/history pipeline
@@ -8951,7 +8951,7 @@ if (custom_extracted) {
     if (leakQueue != NULL) {
         leak_core1_attempts++;
 
-        if (xQueueSend(leakQueue, &l2_cap, 0) != pdTRUE) {
+        if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
             leak_core1_dropped++;
         }
     }
@@ -9339,7 +9339,7 @@ void drawMenu() {
   // ==========================================
   // 3. AP SCANNER / CH SELECT BUTTON (Y: 190 - 230)
   // ==========================================
-  if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_LAYER2) {
+  if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
     // Active State
     tft.fillRect(50, 190, 200, 40, TFT_BLACK);
     tft.drawRect(50, 190, 200, 40, TFT_WHITE);
@@ -9347,7 +9347,7 @@ void drawMenu() {
     
     if (currentRadioMode == RADIO_WIFI) {
         tft.drawString("SELECT AP", 150, 210);
-    } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_LAYER2) {
+    } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
         if (target_locked) {
             char chStr[16];
             snprintf(chStr, sizeof(chStr), "LOCKED: CH %d", target_channel);
@@ -9389,7 +9389,7 @@ void drawMenu() {
   else if (currentRadioMode == RADIO_CHANNELS) {
     tft.fillRect(300, 190, 150, 40, TFT_ORANGE); 
   }
-  else if (currentRadioMode == RADIO_LAYER2) {
+  else if (currentRadioMode == RADIO_PCAP) {
     tft.fillRect(300, 190, 150, 40, TFT_MAROON); 
   }
 
@@ -9409,8 +9409,8 @@ void drawMenu() {
   else if (currentRadioMode == RADIO_CHANNELS) {
     tft.drawString("MODE: CHANNELS", 375, 210);
   }
-  else if (currentRadioMode == RADIO_LAYER2) {
-    tft.drawString("MODE: LAYER 2", 375, 210);
+  else if (currentRadioMode == RADIO_PCAP) {
+    tft.drawString("MODE: PCAP", 375, 210);
   }
 
   // 5. EXIT BUTTON
@@ -9424,8 +9424,8 @@ void drawMenu() {
 }
 
 void drawChartHeader() {
-  // 1. Gate the horizontal separator line so it doesn't cut through the L2 terminal
-  if (currentRadioMode != RADIO_LAYER2) {
+  // 1. Gate the horizontal separator line so it doesn't cut through the PCAP terminal
+  if (currentRadioMode != RADIO_PCAP) {
     tft.drawLine(0, HEADER_HEIGHT - 8, 480, HEADER_HEIGHT - 8, COLOR_HOT_CHEST);
   }
 
@@ -9461,11 +9461,11 @@ void drawChartHeader() {
   else if (currentRadioMode == RADIO_CHANNELS) { 
     snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | SNIFFING SPECTRUM", CHANNELS[current_ch_idx]);
   }
-  else if (currentRadioMode == RADIO_LAYER2) { 
+  else if (currentRadioMode == RADIO_PCAP) { 
     if (!target_locked) {
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | L2 CAPTURE (HOPPING)", CHANNELS[current_ch_idx]);
+      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (HOPPING)", CHANNELS[current_ch_idx]);
     } else {
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | L2 CAPTURE (LOCKED)", target_channel);
+      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (LOCKED)", target_channel);
     }
   }
   else if (currentRadioMode == RADIO_WIFI) {    
@@ -9623,7 +9623,7 @@ void drawChartFooter() {
   tft.setTextColor(TFT_WHITE);
   tft.setTextDatum(MC_DATUM); 
 
-  if (currentRadioMode != RADIO_LAYER2) {
+  if (currentRadioMode != RADIO_PCAP) {
       // ==========================================
       // ZONE 1: SORT METRIC (Center X = 72)
       // ==========================================
@@ -9683,7 +9683,7 @@ void drawChartFooter() {
         tft.drawString("SCALE: LIN", 362, 309);
       }
   } else {
-      // Layer 2 gets a clean, unified label instead of useless sort buttons
+      // PCAP gets a clean, unified label instead of useless sort buttons
       tft.setTextColor(TFT_DARKGREY);
       // Draw the static time scale on the far left
       tft.setTextDatum(TL_DATUM);
@@ -9961,7 +9961,7 @@ void drawDeviceList() {
   else if (currentRadioMode == RADIO_BLE) total_devices = sessionBleCount;
   else if (currentRadioMode == RADIO_AP) total_devices = sessionApCount;
   else if (currentRadioMode == RADIO_CHANNELS) total_devices = sessionChannelCount;
-  else if (currentRadioMode == RADIO_LAYER2) {
+  else if (currentRadioMode == RADIO_PCAP) {
       for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
           if (leakHistory[i].leak.meta.timestamp > 0) total_devices++;
       }
@@ -9978,7 +9978,7 @@ void drawDeviceList() {
   int valid_indices[MAX_LEAK_SLOTS] = {0}; 
   int valid_count = 0;
 
-  if (currentRadioMode == RADIO_LAYER2) {
+  if (currentRadioMode == RADIO_PCAP) {
       // --- 1. GATHER LOGICAL ENTRIES ---
       for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
           if (leakHistory[i].leak.meta.timestamp > 0) {
@@ -9986,7 +9986,7 @@ void drawDeviceList() {
           }
       }
 
-      // --- 2. DYNAMIC L2 "SNUG" PACKING ---
+      // --- 2. DYNAMIC PCAP "SNUG" PACKING ---
       const int maxChars = 58;
       int page_starts[MAX_LEAK_SLOTS] = {0}; // FRIEND'S FIX: Eliminated the arbitrary 15
       int total_pages = 0;
@@ -10053,7 +10053,7 @@ void drawDeviceList() {
     if (currentRadioMode == RADIO_BLE) { headerColor = TFT_PURPLE; modeStr = "BLE"; } 
     else if (currentRadioMode == RADIO_AP) { headerColor = TFT_DARKGREEN; modeStr = "NETWORKS"; } 
     else if (currentRadioMode == RADIO_CHANNELS) { headerColor = TFT_ORANGE; modeStr = "CHANNELS"; } 
-    else if (currentRadioMode == RADIO_LAYER2) { headerColor = TFT_MAROON; modeStr = "LAYER 2 LEAKS"; }
+    else if (currentRadioMode == RADIO_PCAP) { headerColor = TFT_MAROON; modeStr = "PCAP LEAKS"; }
     
     tft.fillRect(0, 0, 480, 24, headerColor);
     char headerStr[64];
@@ -10090,7 +10090,7 @@ void drawDeviceList() {
     else if (currentBleSortMode == SORT_BLE_DIST) { strcpy(metricStr, "SORT:DIST"); metricColor = TFT_GREEN; }
     else if (currentBleSortMode == SORT_BLE_AGE) { strcpy(metricStr, "SORT:AGE"); metricColor = TFT_BLUE; }
   }
-  else if (currentRadioMode == RADIO_LAYER2) {
+  else if (currentRadioMode == RADIO_PCAP) {
     if (currentLeakSort == SORT_LEAK_AGE) { strcpy(metricStr, "SORT:AGE"); metricColor = TFT_BLUE; }
     else if (currentLeakSort == SORT_LEAK_LENGTH) { strcpy(metricStr, "SORT:SIZE"); metricColor = TFT_CYAN; }
     else if (currentLeakSort == SORT_LEAK_HITS) { strcpy(metricStr, "SORT:HITS"); metricColor = TFT_WHITE; }
@@ -10121,7 +10121,7 @@ void drawDeviceList() {
     // ==========================================
     // 5. DRAW THE UNIFIED DUAL COLUMN HEADERS
     // ==========================================
-    if (currentRadioMode != RADIO_LAYER2) {
+    if (currentRadioMode != RADIO_PCAP) {
         tft.setTextColor(TFT_GREEN);
         if (currentRadioMode == RADIO_WIFI) {
           tft.setFreeFont(&UbuntuMono_B9pt7b);
@@ -10155,14 +10155,14 @@ void drawDeviceList() {
     // 6. DRAW THE DATA ROWS
     // ==========================================
     int row = 0;
-    int base_y = (currentRadioMode == RADIO_LAYER2) ? 32 : 62;
-    int y_spacing = 33; // Fixed spacing for all non-L2 modes
-    int dyn_y = base_y; // Dynamic tracker exclusively for L2 mode
+    int base_y = (currentRadioMode == RADIO_PCAP) ? 32 : 62;
+    int y_spacing = 33; // Fixed spacing for all non-PCAP modes
+    int dyn_y = base_y; // Dynamic tracker exclusively for PCAP mode
 
     for (int i = start_idx; i < end_idx; i++) {
       
       // Select the correct Y coordinate based on the mode
-      int y = (currentRadioMode == RADIO_LAYER2) ? dyn_y : (base_y + (row * y_spacing)); 
+      int y = (currentRadioMode == RADIO_PCAP) ? dyn_y : (base_y + (row * y_spacing)); 
       
       if (currentRadioMode == RADIO_WIFI) {
         // ... [WIFI MODE LOGIC REMAINS UNCHANGED] ...
@@ -10443,13 +10443,13 @@ void drawDeviceList() {
         tft.drawString(line2, 5, y + 15);
         tft.setTextColor(TFT_WHITE); 
       }
-      else if (currentRadioMode == RADIO_LAYER2) {
+      else if (currentRadioMode == RADIO_PCAP) {
         // Map our logical loop variable 'i' back to the real array index!
         int real_idx = valid_indices[i];
         auto& lk = leakHistory[real_idx].leak;
 
         // ==========================================
-        // LAYER 2 MODE - DYNAMIC 1 TO 3 LINE RENDERING
+        // PCAP MODE - DYNAMIC 1 TO 3 LINE RENDERING
         // ==========================================
         char line1[90], line2[90], line3[90];
 
@@ -10582,7 +10582,7 @@ if (lk.meta.ip_version == 6) {
         
         dyn_y += current_item_h + 5; 
         tft.setTextColor(TFT_WHITE);
-      }          // closes RADIO_LAYER2 branch
+      }          // closes RADIO_PCAP branch
       row++;     // <-- also missing, see note below
     }            // closes the for loop
   }              // closes the total_devices==0 / else block
@@ -11786,7 +11786,7 @@ void drawTemporalLegend() {
     tft.drawLine(0, chart_start_y, 480, chart_start_y, COLOR_HOT_CHEST);
 }
 
-// --- L2 QSORT COMPARATORS ---
+// --- PCAP QSORT COMPARATORS ---
 int compareLeakAge(const void* a, const void* b) {
     LeakHistoryEntry* lA = (LeakHistoryEntry*)a;
     LeakHistoryEntry* lB = (LeakHistoryEntry*)b;
@@ -11825,7 +11825,7 @@ int compareLeakHits(const void* a, const void* b) {
 }
 
 // --- BULLETPROOF SORTING ENGINE ---
-void processL2Data() {
+void processPcapData() {
     if (currentLeakSort == SORT_LEAK_AGE) {
         qsort(leakHistory, MAX_LEAK_SLOTS, sizeof(LeakHistoryEntry), compareLeakAge);
     } else if (currentLeakSort == SORT_LEAK_LENGTH) {
@@ -11885,8 +11885,8 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
             else if (currentBleSortMode == SORT_BLE_DIST) currentBleSortMode = SORT_BLE_AGE;
             else currentBleSortMode = SORT_BLE_HITS;
           }
-          // --- ADDED LAYER 2 LIVE TOGGLE ---
-          else if (currentRadioMode == RADIO_LAYER2) {
+          // --- ADDED PCAP LIVE TOGGLE ---
+          else if (currentRadioMode == RADIO_PCAP) {
             if (currentLeakSort == SORT_LEAK_AGE) currentLeakSort = SORT_LEAK_LENGTH;
             else if (currentLeakSort == SORT_LEAK_LENGTH) currentLeakSort = SORT_LEAK_HITS;
             else currentLeakSort = SORT_LEAK_AGE;
@@ -11953,7 +11953,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           currentState = SCREEN_AP_SCAN;
           drawApScanner();
           delay(300);
-        } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_LAYER2) {
+        } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
           if (!target_locked) {
               target_locked = true;
               target_channel = 1;
@@ -11981,7 +11981,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         device_current_page = 0;
         
         // Force an immediate sort before drawing so the array is ready
-        if (currentRadioMode == RADIO_LAYER2) processL2Data();
+        if (currentRadioMode == RADIO_PCAP) processPcapData();
         else forceSessionSort();
         
         drawDeviceList();
@@ -12000,7 +12000,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         if (currentRadioMode == RADIO_WIFI) nextMode = RADIO_BLE;
         else if (currentRadioMode == RADIO_BLE) nextMode = RADIO_AP;
         else if (currentRadioMode == RADIO_AP) nextMode = RADIO_CHANNELS;
-        else if (currentRadioMode == RADIO_CHANNELS) nextMode = RADIO_LAYER2;
+        else if (currentRadioMode == RADIO_CHANNELS) nextMode = RADIO_PCAP;
         else nextMode = RADIO_WIFI;
 
         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
@@ -12026,11 +12026,11 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           tft.drawRect(300, 190, 150, 40, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: CHANNELS", 375, 210);
-        } else if (nextMode == RADIO_LAYER2) {
+        } else if (nextMode == RADIO_PCAP) {
           tft.fillRect(300, 190, 150, 40, TFT_MAROON);
           tft.drawRect(300, 190, 150, 40, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: LAYER 2", 375, 210);
+          tft.drawString("MODE: PCAP", 375, 210);
         }
 
         bool foxhunt_available = false;
@@ -12064,10 +12064,10 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         // ==========================================
         // THE UNION SCRUB FIX
         // Because leakHistory shares a union with Wi-Fi/BLE session data, 
-        // we MUST scrub it clean when switching to Layer 2. If we don't, the 
-        // L2 sorting engine will choke on Wi-Fi garbage bytes!
+        // we MUST scrub it clean when switching to PCAP. If we don't, the 
+        // PCAP sorting engine will choke on Wi-Fi garbage bytes!
         // ==========================================
-        if (nextMode == RADIO_LAYER2) {
+        if (nextMode == RADIO_PCAP) {
             memset(leakHistory, 0, sizeof(LeakHistoryEntry) * MAX_LEAK_SLOTS);
         }
 
@@ -12085,11 +12085,11 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         
         force_ui_refresh = true; 
         
-        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_LAYER2) {
+        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP) {
             esp_wifi_set_promiscuous(true); 
         }
         
-        if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_LAYER2) && target_locked) {
+        if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {
           esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
         } else if (currentRadioMode != RADIO_BLE) {
           esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
@@ -12294,8 +12294,8 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
             else if (currentBleSortMode == SORT_BLE_DIST) currentBleSortMode = SORT_BLE_AGE;
             else currentBleSortMode = SORT_BLE_HITS;
           }
-          // --- ADDED LAYER 2 SORT TOGGLE ---
-          else if (currentRadioMode == RADIO_LAYER2) {
+          // --- ADDED PCAP SORT TOGGLE ---
+          else if (currentRadioMode == RADIO_PCAP) {
             if (currentLeakSort == SORT_LEAK_AGE) currentLeakSort = SORT_LEAK_LENGTH;
             else if (currentLeakSort == SORT_LEAK_LENGTH) currentLeakSort = SORT_LEAK_HITS;
             else currentLeakSort = SORT_LEAK_AGE;
@@ -12304,7 +12304,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           device_current_page = 0; 
           
           // Force sort array before rendering list
-          if (currentRadioMode == RADIO_LAYER2) processL2Data();
+          if (currentRadioMode == RADIO_PCAP) processPcapData();
           else forceSessionSort(); 
           
           drawDeviceList();
@@ -12316,7 +12316,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           device_current_page = 0; 
           
           // Force sort array before rendering list
-          if (currentRadioMode == RADIO_LAYER2) processL2Data();
+          if (currentRadioMode == RADIO_PCAP) processPcapData();
           else forceSessionSort();
           
           drawDeviceList();
@@ -12328,15 +12328,15 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // B. FOOTER NAVIGATION (Y >= 294)
       // ==========================================
       else if (t_y >= 294) { 
-        // --- ADDED LAYER 2 PAGINATION MATH ---
-        int items_per_page = (currentRadioMode == RADIO_LAYER2) ? 3 : 7;
+        // --- ADDED PCAP PAGINATION MATH ---
+        int items_per_page = (currentRadioMode == RADIO_PCAP) ? 3 : 7;
         int total_devices = 0;
         
         if (currentRadioMode == RADIO_WIFI) total_devices = sessionMacCount;
         else if (currentRadioMode == RADIO_BLE) total_devices = sessionBleCount;
         else if (currentRadioMode == RADIO_AP) total_devices = sessionApCount;
         else if (currentRadioMode == RADIO_CHANNELS) total_devices = sessionChannelCount;
-        else if (currentRadioMode == RADIO_LAYER2) {
+        else if (currentRadioMode == RADIO_PCAP) {
             for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
                 if (leakHistory[i].hitCount > 0) total_devices++;
             }
@@ -12368,8 +12368,8 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       else if (t_y >= 62 && t_y < 294) { 
         
-        // --- ADDED LAYER 2 GUARD (No foxhunting for leaks yet) ---
-        if (currentRadioMode == RADIO_LAYER2) return false;
+        // --- ADDED PCAP GUARD (No foxhunting for leaks yet) ---
+        if (currentRadioMode == RADIO_PCAP) return false;
 
         int tapped_screen_row = (t_y - 62) / 33;
         int total_devices = 0;
@@ -12643,11 +12643,11 @@ void runProbeCorrelationEngine() {
 // ==========================================
 // CORE 1: RAM-ONLY QUEUE CONSUMER
 // ==========================================
-void logLeakToSerial(const Layer2Capture& leak, const char* src_vendor,
+void logLeakToSerial(const PacketCapture& leak, const char* src_vendor,
                       const char* dst_vendor, const char* ssid) {
 
     // Render correctly regardless of IP version, reusing meta.ip_version
-    // as the single source of truth (same field the on-screen L2 display
+    // as the single source of truth (same field the on-screen PCAP display
     // already keys off of).
     char srcIpStr[48], dstIpStr[48];
 
@@ -12687,7 +12687,7 @@ void logLeakToSerial(const Layer2Capture& leak, const char* src_vendor,
 void processLeakQueue() {
     if (leakQueue == NULL) return;
 
-    Layer2Capture incomingLeak;
+    PacketCapture incomingLeak;
     bool ui_needs_update = false;
 
     while (xQueueReceive(leakQueue, &incomingLeak, 0) == pdTRUE) {
@@ -12764,7 +12764,7 @@ void processLeakQueue() {
             // Move the refreshed entry to the front
             if (matchIndex > 0) {
 
-                Layer2Capture tempCap =
+                PacketCapture tempCap =
                     terminal_history[matchIndex];
 
                 uint16_t tempHits =
@@ -12952,9 +12952,9 @@ void processLeakQueue() {
     // ==========================================
     if (ui_needs_update &&
         currentState == SCREEN_DEVICE_LIST &&
-        currentRadioMode == RADIO_LAYER2) {
+        currentRadioMode == RADIO_PCAP) {
 
-        processL2Data();
+        processPcapData();
         drawDeviceList();
     }
 }
@@ -12972,7 +12972,7 @@ bool updateRadioHopper() {
         // RADIO-AWARE TIMERS
         // ==========================================
         // Both Wi-Fi and AP modes need the Channel Hopper!
-        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_LAYER2) {
+        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP) {
             if (!target_locked) {
                 if (millis() - lastTimer > HOP_INTERVAL) {
                     lastTimer = millis();
@@ -13492,7 +13492,7 @@ void processChannelData() {
 
 void drawWaterfallChart() {
     // 1. Gate the legends
-    if (currentRadioMode != RADIO_LAYER2) {
+    if (currentRadioMode != RADIO_PCAP) {
         drawTemporalLegend();
         drawPersistentTopN();
     }
@@ -13504,8 +13504,8 @@ void drawWaterfallChart() {
     
     int ERASER_WIDTH = 44;
 
-    // 3. Adjust the eraser to ONLY clear the bottom pane in L2 mode
-    int clear_start_y = (currentRadioMode == RADIO_LAYER2) ? (split_y + 1) : (chart_start_y + 1);
+    // 3. Adjust the eraser to ONLY clear the bottom pane in PCAP mode
+    int clear_start_y = (currentRadioMode == RADIO_PCAP) ? (split_y + 1) : (chart_start_y + 1);
     int clear_height = CHART_BOTTOM - clear_start_y;
     
     // Pure wipe logic (using dynamic clear_start_y and clear_height)
@@ -13689,8 +13689,8 @@ void drawWaterfallChart() {
         }
     }
     static uint32_t last_rendered_leak_timestamp = 0;
-    if (currentRadioMode == RADIO_LAYER2) {
-        current_total_metric = l2_bytes_render;
+    if (currentRadioMode == RADIO_PCAP) {
+        current_total_metric = capture_bytes_render;
         
         // Redraw only if the newest packet in the buffer has changed
         if (terminal_history[0].meta.timestamp != last_rendered_leak_timestamp && terminal_history[0].meta.timestamp > 0) {
@@ -13979,8 +13979,8 @@ cursor_y += 5;
         tft.setTextDatum(TL_DATUM);
         tft.setTextColor(COLOR_HOT_CHEST);
 
-        // Gate the top pane percentages AND the time scale so they don't overwrite L2 text
-        if (currentRadioMode != RADIO_LAYER2) {
+        // Gate the top pane percentages AND the time scale so they don't overwrite PCAP text
+        if (currentRadioMode != RADIO_PCAP) {
             tft.drawString("100%", text_x, chart_start_y + 4);
             int mid_y = chart_start_y + ((split_y - chart_start_y) / 2);
             tft.drawString("50%", text_x, mid_y - 6);
@@ -14017,16 +14017,16 @@ void setup() {
 Serial.printf("[MEM] Free heap at boot: %u bytes\n", esp_get_free_heap_size());
 Serial.printf("[MEM] Free SRAM minimum: %u bytes\n", esp_get_minimum_free_heap_size());
 Serial.printf("[MEM] sizeof(LiveCaptureEvent) = %u bytes\n", sizeof(LiveCaptureEvent));   // <-- add here
-Serial.printf("[MEM] sizeof(Layer2Capture)    = %u bytes\n", sizeof(Layer2Capture));     // <-- and this one too
+Serial.printf("[MEM] sizeof(PacketCapture)    = %u bytes\n", sizeof(PacketCapture));     // <-- and this one too
 Serial.printf(
-    "Layer2Capture=%u bytes | leakQueue storage ~%u bytes\n",
-    (unsigned)sizeof(Layer2Capture),
-    (unsigned)(sizeof(Layer2Capture) * LEAK_QUEUE_DEPTH)
+    "PacketCapture=%u bytes | leakQueue storage ~%u bytes\n",
+    (unsigned)sizeof(PacketCapture),
+    (unsigned)(sizeof(PacketCapture) * LEAK_QUEUE_DEPTH)
 );
 initProbeTracker();
 
 // ==========================================
-// 1. CREATE THE LAYER 2 QUEUES + TRANSIENT BUFFERS
+// 1. CREATE THE PCAP QUEUES + TRANSIENT BUFFERS
 // ==========================================
 
 // Allocate the two reusable full-payload buffers on the heap.
@@ -14039,8 +14039,8 @@ if (ptr_isr_evt == nullptr || ptr_core1_evt == nullptr) {
     while (true) delay(100);
 }
 
-// Post-parser queue: ONLY Layer2Capture objects.
-leakQueue = xQueueCreate(LEAK_QUEUE_DEPTH, sizeof(Layer2Capture));
+// Post-parser queue: ONLY PacketCapture objects.
+leakQueue = xQueueCreate(LEAK_QUEUE_DEPTH, sizeof(PacketCapture));
 
 if (leakQueue == NULL) {
     Serial.println("[!] FATAL: Failed to create leakQueue!");
@@ -14150,14 +14150,14 @@ void loop() {
     else if (currentRadioMode == RADIO_BLE) processBleData();
     else if (currentRadioMode == RADIO_AP) processApData();
     else if (currentRadioMode == RADIO_CHANNELS) processChannelData();
-    // --- ADDED LAYER 2 MATH GATE ---
-    else if (currentRadioMode == RADIO_LAYER2) {
+    // --- ADDED PCAP MATH GATE ---
+    else if (currentRadioMode == RADIO_PCAP) {
         // Snapshot the bytes for the UI and reset the ISR counter
-        l2_bytes_render = l2_bytes_tick;
-        l2_bytes_tick = 0;
+        capture_bytes_render = capture_bytes_tick;
+        capture_bytes_tick = 0;
         // IF THIS PRINTS '0', THE ISR IS BROKEN. 
         // IF THIS PRINTS '4000', THE CHART GRAPHICS ARE BROKEN.
-        Serial.printf("L2 Tick Vol: %u\n", l2_bytes_render);
+        Serial.printf("PCAP Tick Vol: %u\n", capture_bytes_render);
     }
 
     pause_sniffing = false; // Unlock immediately!
@@ -14223,7 +14223,7 @@ if (millis() - last_debug_print > 3000) {
     leak_core1_dropped     = 0;
 
     if (currentState == SCREEN_CHART &&
-        currentRadioMode == RADIO_LAYER2) {
+        currentRadioMode == RADIO_PCAP) {
 
         drawTelemetryHeader();
     }
