@@ -37,9 +37,7 @@ extern bool is_foxhunting;
 extern uint8_t foxhunt_target_mac[6];
 extern UIState currentState;
 extern TFT_eSPI tft;
-void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type);
 void updateFoxhuntSignal(int packet_rssi);
-void decodeEddystoneURL(const std::string& sData, char* outBuffer, size_t maxLen);
 
 void switchRadioMode(RadioMode targetMode);
 bool updateRadioHopper();

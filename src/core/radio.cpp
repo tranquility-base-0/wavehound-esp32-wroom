@@ -1,5 +1,7 @@
 #include "radio.h"
 #include "osint/vendor.h"
+#include "capture/capture.h"
+#include "modes/ble.h"
 #include "UbuntuMono_Regular9pt7b.h"
 #include <string.h>
 #include <stdio.h>

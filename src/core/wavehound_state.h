@@ -36,6 +36,14 @@ enum RadioProtocol {
 };
 
 enum ProbeSortMode { PROBE_SORT_HITS, PROBE_SORT_DIST, PROBE_SORT_SSIDS, PROBE_SORT_AGE };
+enum SortMode { SORT_TOTAL, SORT_TX, SORT_RX, SORT_AVG, SORT_CV, SORT_DIST, SORT_AGE };
+enum BleSortMode { SORT_BLE_HITS, SORT_BLE_DIST, SORT_BLE_AGE };
+
+// shared sort state + physics helper (defined in main.cpp)
+extern SortMode currentSortMode;
+extern BleSortMode currentBleSortMode;
+extern bool sort_descending;
+float calculateRfDistance(int rssi, int txPower, RadioProtocol protocol, float customLoss = 0.0);
 
 struct FlowRecord {
     uint32_t flow_hash;       
