@@ -1,4 +1,5 @@
-const uint8_t UbuntuMono_Regular11pt7bBitmaps[] PROGMEM = {
+#ifdef FONT_DATA
+extern const uint8_t UbuntuMono_Regular11pt7bBitmaps[] PROGMEM = {
   0x00, 0x6D, 0xB6, 0xDB, 0x60, 0x7F, 0xC0, 0xCF, 0x3C, 0xF3, 0xCC, 0x33,
   0x19, 0x8C, 0xC6, 0x6F, 0xFF, 0xFC, 0xCC, 0xCC, 0x66, 0x7F, 0xFF, 0xEC,
   0xC6, 0x63, 0x30, 0x0C, 0x06, 0x0F, 0xCF, 0xEC, 0x16, 0x03, 0x80, 0xF0,
@@ -104,8 +105,12 @@ const uint8_t UbuntuMono_Regular11pt7bBitmaps[] PROGMEM = {
   0x30, 0x30, 0x1F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFC, 0xF8, 0x0C, 0x0C, 0x0C,
   0x0C, 0x0C, 0x0C, 0x0C, 0x04, 0x03, 0x04, 0x0C, 0x0C, 0x0C, 0x0C, 0x0C,
   0x0C, 0x0C, 0xF8, 0x70, 0xBC, 0xF3, 0xD0, 0xE0 };
+#else
+extern const uint8_t UbuntuMono_Regular11pt7bBitmaps[] PROGMEM;
+#endif
 
-const GFXglyph UbuntuMono_Regular11pt7bGlyphs[] PROGMEM = {
+#ifdef FONT_DATA
+extern const GFXglyph UbuntuMono_Regular11pt7bGlyphs[] PROGMEM = {
   {     0,   1,   1,  11,    0,    0 },   // 0x20 ' '
   {     1,   3,  14,  11,    4,  -13 },   // 0x21 '!'
   {     7,   6,   5,  11,    3,  -14 },   // 0x22 '"'
@@ -200,11 +205,18 @@ const GFXglyph UbuntuMono_Regular11pt7bGlyphs[] PROGMEM = {
   {  1208,   8,  19,  11,    2,  -14 },   // 0x7B '{'
   {  1227,   2,  19,  11,    5,  -14 },   // 0x7C '|'
   {  1232,   8,  19,  11,    1,  -14 },   // 0x7D '}'
-  {  1251,   9,   4,  11,    1,   -7 } }; // 0x7E '~'
+  {  1251,   9,   4,  11,    1,   -7 } };
+#else
+extern const GFXglyph UbuntuMono_Regular11pt7bGlyphs[] PROGMEM;
+#endif // 0x7E '~'
 
-const GFXfont UbuntuMono_Regular11pt7b PROGMEM = {
+#ifdef FONT_DATA
+extern const GFXfont UbuntuMono_Regular11pt7b PROGMEM = {
   (uint8_t  *)UbuntuMono_Regular11pt7bBitmaps,
   (GFXglyph *)UbuntuMono_Regular11pt7bGlyphs,
   0x20, 0x7E, 22 };
+#else
+extern const GFXfont UbuntuMono_Regular11pt7b PROGMEM;
+#endif
 
 // Approx. 1928 bytes
