@@ -10,6 +10,7 @@
 #include "parsers/structured.h"
 #include "tag221Lookup.h"
 #include "modes/ap_scanner.h"
+#include "osint/osint.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -18,7 +19,6 @@ extern int current_x;
 int compareLeakAge(const void* a, const void* b);
 int compareLeakLength(const void* a, const void* b);
 int compareLeakHits(const void* a, const void* b);
-void processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor, int8_t rssi, uint32_t hw_hash);
 void drawDeviceList();
 // ==========================================
 // WAVE HOUND PCAP & LIVE DUMP GLOBALS
