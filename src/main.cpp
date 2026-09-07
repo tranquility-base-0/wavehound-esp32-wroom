@@ -12901,22 +12901,22 @@ void processLeakQueue() {
 
             if (targetIndex == -1) {
                 int victim_idx = 0;
-                int min_score = 999999;
-                uint32_t oldest_time = 0xFFFFFFFF;
+                int min_score = INT_MAX;
+                uint32_t oldest_time = UINT32_MAX;
 
                 for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
                     int score = leakHistory[i].leak.retained_len;
                     if (score == 0) score = strlen(leakHistory[i].leak.text);
-                    if (leakHistory[i].leak.meta.is_high_value) score += 10000;
+                    if (leakHistory[i].leak.meta.is_high_value) score += 300;
 
                     if (score < min_score) {
                         min_score = score;
                         victim_idx = i;
                         oldest_time = leakHistory[i].first_seen;
                     } else if (score == min_score) {
-                        if (leakHistory[i].leak.meta.timestamp < oldest_time) {
+                        if (leakHistory[i].first_seen < oldest_time) {
                             victim_idx = i;
-                            oldest_time = leakHistory[i].leak.meta.timestamp;
+                            oldest_time = leakHistory[i].first_seen;
                         }
                     }
                 }
@@ -12925,7 +12925,7 @@ void processLeakQueue() {
                 if (incoming_score == 0) incoming_score = strlen(incomingLeak.text);
                 if (incomingLeak.meta.is_high_value) incoming_score += 10000;
 
-                if (incoming_score >= min_score) {
+                if (incoming_score > min_score) {
                     targetIndex = victim_idx;
                 }
             }
