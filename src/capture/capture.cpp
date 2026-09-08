@@ -615,8 +615,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   uint8_t frame_type = payload[0] & 0x0C;
   uint8_t frame_subtype = (payload[0] & 0xF0) >> 4;
 
-  // Allow Data frames (Type 0x08) AND Deauth frames (Type 0x00, Subtype 12)
-  if (frame_type != 0x08 && !(frame_type == 0x00 && frame_subtype == 12)) return;
+  // Allow Data frames (Type 0x08) always; Deauth frames (Type 0x00, Subtype 12) only in PCAP mode
+  if (frame_type != 0x08 && !(frame_type == 0x00 && frame_subtype == 12 && currentRadioMode == RADIO_PCAP)) return;
 
   // ==========================================
   // 2. INSTANT DEAUTH INTERCEPTOR
