@@ -31,19 +31,19 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
     }
 
     // ==========================================
-    // ON-THE-FLY RAW HEX DUMP (Zero SRAM Allocation)
+    // ON-THE-FLY RAW HEX DUMP (DISABLED: hot-path serial spam)
     // ==========================================
-    uint8_t* rawPayload = advertisedDevice->getPayload();
-    size_t payloadLen = advertisedDevice->getPayloadLength();
-
-    // Print MAC directly from bytes to avoid NimBLE's .toString() std::string allocation
-    Serial.printf("RAW [%02d bytes] MAC: %02X:%02X:%02X:%02X:%02X:%02X | ", 
-                  payloadLen, rawMac[5], rawMac[4], rawMac[3], rawMac[2], rawMac[1], rawMac[0]);
-    
-    for (size_t p = 0; p < payloadLen; p++) {
-        Serial.printf("%02X ", rawPayload[p]);
-    }
-    Serial.println();
+    // uint8_t* rawPayload = advertisedDevice->getPayload();
+    // size_t payloadLen = advertisedDevice->getPayloadLength();
+    //
+    // // Print MAC directly from bytes to avoid NimBLE's .toString() std::string allocation
+    // Serial.printf("RAW [%02d bytes] MAC: %02X:%02X:%02X:%02X:%02X:%02X | ",
+    //               payloadLen, rawMac[5], rawMac[4], rawMac[3], rawMac[2], rawMac[1], rawMac[0]);
+    //
+    // for (size_t p = 0; p < payloadLen; p++) {
+    //     Serial.printf("%02X ", rawPayload[p]);
+    // }
+    // Serial.println();
     
     int rssi = advertisedDevice->getRSSI();
     int txPower = advertisedDevice->haveTXPower() ? advertisedDevice->getTXPower() : 0;

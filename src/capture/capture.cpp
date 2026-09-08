@@ -1341,7 +1341,7 @@ void processLiveDumpQueue() {
 
     LiveCaptureEvent& live_evt = *ptr_core1_evt;
     int packets_processed = 0; 
-    uint32_t start_time = micros();
+    // uint32_t start_time = micros(); // disabled with the benchmark print
     static char temp_text[MAX_LEAK_STR_LEN];
     static char eapol_text[MAX_LEAK_STR_LEN];
     
@@ -1373,16 +1373,16 @@ void processLiveDumpQueue() {
     );
     */
 
-    for (int i = 0; i < 32 && i < live_evt.raw_len; i++) {
-        uint8_t c = live_evt.raw_payload[i];
-
-        if (c >= 32 && c <= 126)
-            Serial.printf("%c", c);
-        else
-            Serial.printf(".");
-    }
-
-    Serial.println();
+    // for (int i = 0; i < 32 && i < live_evt.raw_len; i++) {
+    //     uint8_t c = live_evt.raw_payload[i];
+    //
+    //     if (c >= 32 && c <= 126)
+    //         Serial.printf("%c", c);
+    //     else
+    //         Serial.printf(".");
+    // }
+    //
+    // Serial.println();
 }
 
         // =========================================================
@@ -1620,33 +1620,34 @@ if (!custom_extracted &&
 
             found_tls = true;
 
-            Serial.printf(
-                "\n[TLS-RECORD] offset=%u type=%02X version=%04X len=%u\n",
-                offset, rec_type, rec_version, rec_len
-            );
-
-            if (rec_type == 0x16 && offset + 5 < len) {
-                uint8_t hs_type = p[offset + 5];
-                const char* hs_str = "Unknown";
-
-                if (hs_type == 0x01) hs_str = "ClientHello";
-                else if (hs_type == 0x02) hs_str = "ServerHello";
-                else if (hs_type == 0x0B) hs_str = "Certificate";
-                else if (hs_type == 0x0E) hs_str = "ServerHelloDone";
-                else if (hs_type == 0x10) hs_str = "ClientKeyExchange";
-
-                Serial.printf(
-                    "  -> [TLS-HS] type=%02X %s\n",
-                    hs_type, hs_str
-                );
-
-                if (hs_type == 0x0B &&
-                    rec_len > len - offset - 5) {
-                    Serial.printf(
-                        "  -> [TLS-FRAG] Warning: Certificate record extends beyond this TCP segment!\n"
-                    );
-                }
-            }
+            // TLS record debug dump disabled (hot-path serial spam)
+            // Serial.printf(
+            //     "\n[TLS-RECORD] offset=%u type=%02X version=%04X len=%u\n",
+            //     offset, rec_type, rec_version, rec_len
+            // );
+            //
+            // if (rec_type == 0x16 && offset + 5 < len) {
+            //     uint8_t hs_type = p[offset + 5];
+            //     const char* hs_str = "Unknown";
+            //
+            //     if (hs_type == 0x01) hs_str = "ClientHello";
+            //     else if (hs_type == 0x02) hs_str = "ServerHello";
+            //     else if (hs_type == 0x0B) hs_str = "Certificate";
+            //     else if (hs_type == 0x0E) hs_str = "ServerHelloDone";
+            //     else if (hs_type == 0x10) hs_str = "ClientKeyExchange";
+            //
+            //     Serial.printf(
+            //         "  -> [TLS-HS] type=%02X %s\n",
+            //         hs_type, hs_str
+            //     );
+            //
+            //     if (hs_type == 0x0B &&
+            //         rec_len > len - offset - 5) {
+            //         Serial.printf(
+            //             "  -> [TLS-FRAG] Warning: Certificate record extends beyond this TCP segment!\n"
+            //         );
+            //     }
+            // }
 
             // Subtraction-safe boundary check
             if (rec_len > len - offset - 5)
@@ -1814,13 +1815,14 @@ if (!custom_extracted && eapol_detected) {
             if (extract_printable_runs(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN, 4, false, "|")) {
                 custom_extracted = true; 
             } else {
-                Serial.printf("[FALLTHROUGH] ip_ver=%u proto=%u src=%u dst=%u eth=0x%04X len=%u | first16: ",
-                              live_evt.meta.ip_version, live_evt.meta.protocol, live_evt.meta.src_port, live_evt.meta.dst_port,
-                              live_evt.meta.ether_type, live_evt.raw_len);
-                for (int b = 0; b < 16 && b < live_evt.raw_len; b++) {
-                    Serial.printf("%02X ", live_evt.raw_payload[b]);
-                }
-                Serial.println();
+                // [FALLTHROUGH] hex dump disabled (hot-path serial spam)
+                // Serial.printf("[FALLTHROUGH] ip_ver=%u proto=%u src=%u dst=%u eth=0x%04X len=%u | first16: ",
+                //               live_evt.meta.ip_version, live_evt.meta.protocol, live_evt.meta.src_port, live_evt.meta.dst_port,
+                //               live_evt.meta.ether_type, live_evt.raw_len);
+                // for (int b = 0; b < 16 && b < live_evt.raw_len; b++) {
+                //     Serial.printf("%02X ", live_evt.raw_payload[b]);
+                // }
+                // Serial.println();
             }
         }
 
@@ -1896,10 +1898,10 @@ if (custom_extracted) {
     }
 }
     
-    if (packets_processed > 0) {
-        uint32_t elapsed = micros() - start_time;
-        Serial.printf("Processed %d packets in %u us\n", packets_processed, elapsed);
-    }
+    // if (packets_processed > 0) {
+    //     uint32_t elapsed = micros() - start_time;
+    //     Serial.printf("Processed %d packets in %u us\n", packets_processed, elapsed);
+    // }
 }
 }
 void resetMonitorState() {
