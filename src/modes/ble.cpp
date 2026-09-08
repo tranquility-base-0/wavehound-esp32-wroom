@@ -1,5 +1,6 @@
 #include "ble.h"
 #include "osint/vendor.h"
+#include "core/rf_utils.h"
 #include <string.h>
 #include <NimBLEDevice.h>
 BLEScan* pBLEScan;

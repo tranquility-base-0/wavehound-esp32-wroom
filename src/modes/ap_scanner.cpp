@@ -1,5 +1,6 @@
 #include "ap_scanner.h"
 #include "core/radio.h"
+#include "core/rf_utils.h"
 #include <string.h>
 #include <stdio.h>
 BssidCacheEntry bssidCache[MAX_BSSID_CACHE];

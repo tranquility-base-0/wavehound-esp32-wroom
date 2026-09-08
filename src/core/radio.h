@@ -32,7 +32,6 @@ extern char target_ssid[33];
 
 // Cross-module dependencies (defined in main.cpp until their own phase)
 extern BLEScan* pBLEScan;
-extern std::atomic<bool> pause_sniffing;
 extern bool is_foxhunting;
 extern uint8_t foxhunt_target_mac[6];
 extern UIState currentState;

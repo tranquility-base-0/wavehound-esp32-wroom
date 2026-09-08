@@ -1,6 +1,7 @@
 #pragma once
 #include <stdint.h>
 #include <stddef.h>
+#include <atomic>
 #include "parsers/parser_common.h"
 
 #define MAX_BSSID_CACHE 16
@@ -39,11 +40,13 @@ enum ProbeSortMode { PROBE_SORT_HITS, PROBE_SORT_DIST, PROBE_SORT_SSIDS, PROBE_S
 enum SortMode { SORT_TOTAL, SORT_TX, SORT_RX, SORT_AVG, SORT_CV, SORT_DIST, SORT_AGE };
 enum BleSortMode { SORT_BLE_HITS, SORT_BLE_DIST, SORT_BLE_AGE };
 
-// shared sort state + physics helper (defined in main.cpp)
+// shared sort state (defined in wavehound_state.cpp)
 extern SortMode currentSortMode;
 extern BleSortMode currentBleSortMode;
 extern bool sort_descending;
-float calculateRfDistance(int rssi, int txPower, RadioProtocol protocol, float customLoss = 0.0);
+
+// cross-subsystem sniffing gate (defined in wavehound_state.cpp)
+extern std::atomic<bool> pause_sniffing;
 
 struct FlowRecord {
     uint32_t flow_hash;       

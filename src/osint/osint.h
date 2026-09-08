@@ -21,3 +21,4 @@ int addSsidToPool(const char* ssid, int head_idx, bool &already_exists, bool &ad
 void processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor = "", int8_t rssi = -100, uint32_t hw_hash = 0);
 void processPendingVendors();
 void runProbeCorrelationEngine();
+void initProbeTracker();

@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include "osint/vendor.h"
+#include "core/rf_utils.h"
 #include <string.h>
 int device_current_page = 0;
 const int DEVICES_PER_PAGE = 13; // 9pt font with 18px line spacing fits 13 devices perfectly

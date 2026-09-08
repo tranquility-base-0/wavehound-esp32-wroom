@@ -3,6 +3,7 @@
 #include "ui/ui_utils.h"
 #include "core/radio.h"
 #include "core/wavehound_state.h"
+#include "core/rf_utils.h"
 #include "modes/ap_scanner.h"
 #include "modes/wifi.h"
 #include "capture/capture.h"

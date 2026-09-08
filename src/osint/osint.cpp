@@ -1,5 +1,6 @@
 #include "osint.h"
 #include "core/radio.h"
+#include "core/rf_utils.h"
 #include "osint/vendor.h"
 #include "modes/ap_scanner.h"
 #include <string.h>
@@ -446,4 +447,34 @@ void runProbeCorrelationEngine() {
             }
         }
     }
+}
+
+void initProbeTracker() {
+  // 1. Initialize all device slots
+  for (int i = 0; i < MAX_PROBE_SLOTS; i++) {
+    memset(probeList[i].mac, 0, 6);
+    probeList[i].hits = 0;
+    probeList[i].first_seen = 0;
+    probeList[i].last_seen = 0;
+    probeList[i].ssid_count = 0;
+    probeList[i].first_ssid_idx = -1;
+    probeList[i].generation = 0;
+    probeList[i].needs_lookup = false;
+    probeList[i].rssi = -100;
+    probeList[i].smoothedDistance = 0.0;
+
+    // --- INITIALIZE FINGERPRINTING & GROUP DATA ---
+    probeList[i].pnl_hash = 0;
+    probeList[i].hardware_hash = 0;
+    probeList[i].mac_rotations = 1;
+    // ---------------------------------------------------
+
+    strncpy(probeList[i].vendor, "Unknown", 25);
+  }
+
+  // 2. Initialize the global SSID memory pool
+  for (int i = 0; i < TOTAL_SSID_POOL; i++) {
+    ssidPool[i].text[0] = '\0';
+    ssidPool[i].next_node_idx = -1;
+  }
 }

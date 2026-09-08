@@ -38,3 +38,8 @@ FlowRecord flow_cache[MAX_ACTIVE_FLOWS];
 CryptoAlertCache crypto_cache[ALERT_CACHE_SIZE];
 uint8_t crypto_cache_idx = 0;
 
+SortMode currentSortMode = SORT_TOTAL;
+BleSortMode currentBleSortMode = SORT_BLE_HITS;
+bool sort_descending = true;
+std::atomic<bool> pause_sniffing{false};
+
