@@ -107,6 +107,9 @@ double getProbeMetric(ProbeRecordShared record, ProbeSortMode mode) {
     return 0.0;
 }
 void sortProbeList() {
+    pause_sniffing = true;
+    delay(10);
+
     for (int i = 1; i < MAX_PROBE_SLOTS; i++) {
         ProbeRecordShared key = probeList[i];
         
@@ -141,6 +144,8 @@ void sortProbeList() {
         }
         probeList[j + 1] = key;
     }
+
+    pause_sniffing = false;
 }
 int addSsidToPool(const char* ssid, int head_idx, bool &already_exists, bool &added, uint8_t current_count) {
   already_exists = false;
@@ -368,6 +373,9 @@ void runProbeCorrelationEngine() {
     if (millis() - last_correlation_run > 5000) { 
         last_correlation_run = millis();
         
+        pause_sniffing = true;
+        delay(10);
+
         for (int i = 0; i < MAX_PROBE_SLOTS; i++) {
             if (probeList[i].generation == 0) continue; 
             if ((probeList[i].mac[0] & 0x02) == 0) continue; // Only process randomized MACs
@@ -446,6 +454,8 @@ void runProbeCorrelationEngine() {
                  }
             }
         }
+
+        pause_sniffing = false;
     }
 }
 
