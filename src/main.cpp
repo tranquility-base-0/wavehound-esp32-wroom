@@ -20,6 +20,7 @@
 #include "ui/views/lists.h"
 #include "ui/views/foxhunt.h"
 #include "ui/input.h"
+
 void setup() {
   Serial.begin(115200);
   pinMode(15, OUTPUT); digitalWrite(15, HIGH);
@@ -157,6 +158,7 @@ void loop() {
   // 4. EVENT-DRIVEN GATE: Heavy Math & Full UI Redraws
   if (should_render) {
     pause_sniffing = true; // Lock the radio buffers
+    delay(10); // Give the in-flight Core-0 callback time to finish
 
     // --- MATH ENGINES ---
     if (currentRadioMode == RADIO_WIFI) processWifiData();
