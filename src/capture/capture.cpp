@@ -2060,6 +2060,13 @@ void logLeakToSerial(const PacketCapture& leak, const char* src_vendor,
 // uxTaskGetStackHighWaterMark() already returns bytes.
 volatile uint32_t g_div_stack_highwater = 0;
 
+// Instantaneous loopTask stack margin at this probe point (bytes free above
+// the current frame), distinct from the lifetime-minimum high-water above.
+// pxTaskGetStackStart(NULL) returns the task's stack LOW address (pxStack,
+// TCB member, StackType_t* with StackType_t==uint8_t on this port, stacks
+// grow downward), so free = current_frame_addr - stack_start.
+volatile uint32_t g_div_stack_free_now = 0;
+
 static inline unsigned char tri_norm_char(unsigned char c) {
     if (c >= 'A' && c <= 'Z') c += (unsigned char)('a' - 'A');
     if (c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v') c = ' ';
@@ -2107,16 +2114,29 @@ static void hsort_u32(uint32_t* a, int n) {
 }
 
 static int incoming_diversity_bonus(const PacketCapture& incoming) {
-    // Transient stack scratch: two arrays sized for the full payload (up to
-    // MAX_LEAK_STR_LEN-2 = 510 trigrams each). Freed on return.
-    uint32_t keys_a[MAX_LEAK_STR_LEN];
-    uint32_t keys_b[MAX_LEAK_STR_LEN];
+    // Transient stack scratch, bounded to the first 128 trigrams (130 text
+    // bytes) of each text — 2 x 128 x 4 = 1 KiB of stack instead of 4 KiB.
+    // Longer texts are scored on their bounded prefix: near-duplicate
+    // similarity is dominated by the leading protocol region, so this
+    // preserves the intended Jaccard behavior for realistic inputs while
+    // keeping loopTask stack usage safe (Step 7C).
+    static const int DIV_TRIGRAM_BOUND = 128;
+    uint32_t keys_a[DIV_TRIGRAM_BOUND];
+    uint32_t keys_b[DIV_TRIGRAM_BOUND];
 
     // Record worst-case free stack (bytes) at this deepest point.
     g_div_stack_highwater = uxTaskGetStackHighWaterMark(NULL);
 
+    // Instantaneous margin: distance from this frame down to the stack base.
+    // (Verified: pxTaskGetStackStart returns the LOW end; local addresses sit
+    // above it on a downward-growing ESP32 stack.)
+    volatile uint32_t probe_anchor = 0;
+    g_div_stack_free_now =
+        (uint32_t)&probe_anchor - (uint32_t)pxTaskGetStackStart(NULL);
+
     int la = tri_text_len(incoming.text);
     int na = (la >= 3) ? (la - 2) : 0;
+    if (na > DIV_TRIGRAM_BOUND) na = DIV_TRIGRAM_BOUND;
     for (int i = 0; i < na; ++i) keys_a[i] = trigram_code(incoming.text, i);
     if (na > 0) hsort_u32(keys_a, na);
     int ua = 0;
@@ -2131,6 +2151,7 @@ static int incoming_diversity_bonus(const PacketCapture& incoming) {
 
         int lb = tri_text_len(leakHistory[j].leak.text);
         int nb = (lb >= 3) ? (lb - 2) : 0;
+        if (nb > DIV_TRIGRAM_BOUND) nb = DIV_TRIGRAM_BOUND;
         for (int i = 0; i < nb; ++i) keys_b[i] = trigram_code(leakHistory[j].leak.text, i);
         if (nb > 0) hsort_u32(keys_b, nb);
         int ub = 0;

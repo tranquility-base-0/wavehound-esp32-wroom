@@ -254,8 +254,9 @@ if (millis() - last_debug_print > 3000) {
     );
 
     Serial.printf(
-        "[DIAG] Diversity stack high-water: %u bytes free\n",
-        (unsigned)g_div_stack_highwater
+        "[DIAG] Diversity stack high-water: %u bytes free | now: %u bytes free\n",
+        (unsigned)g_div_stack_highwater,
+        (unsigned)g_div_stack_free_now
     );
 
     uint32_t pend_ms = prof_pend_us / 1000, pend_mx = prof_pend_max / 1000;

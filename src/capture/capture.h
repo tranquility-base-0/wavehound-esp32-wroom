@@ -28,6 +28,7 @@ extern volatile uint32_t live_dump_dropped;
 extern volatile uint32_t live_dump_consumed;
 extern volatile uint32_t leak_displayed;
 extern volatile uint32_t g_div_stack_highwater;
+extern volatile uint32_t g_div_stack_free_now;   // instantaneous loopTask stack margin at the scorer probe
 extern volatile uint32_t pcap_upstream_total;   // cumulative: liveDumpQueue enqueues + bypass leaks
 extern volatile uint32_t pcap_displayed_total;  // cumulative: distinct leaks surfaced (waterfall numerator)
 extern uint32_t leak_core1_attempts;
