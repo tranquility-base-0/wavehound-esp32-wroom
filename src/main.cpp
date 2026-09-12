@@ -21,8 +21,27 @@
 #include "ui/views/foxhunt.h"
 #include "ui/input.h"
 
+// ---------------------------------------------------------------------------
+// MEASUREMENT INSTRUMENTATION (diagnostic-only; reset each DIAG cycle)
+// ---------------------------------------------------------------------------
+#define PROF_TIME(call, us_tot, us_max, n) do { \
+    uint32_t _t0 = micros(); \
+    call; \
+    uint32_t _dt = micros() - _t0; \
+    (us_tot) += _dt; \
+    if (_dt > (us_max)) (us_max) = _dt; \
+    (n)++; \
+} while (0)
+
+static uint32_t prof_pend_us = 0, prof_pend_max = 0, prof_pend_n = 0;
+static uint32_t prof_dump_us = 0, prof_dump_max = 0, prof_dump_n = 0;
+static uint32_t prof_leak_us = 0, prof_leak_max = 0, prof_leak_n = 0;
+static uint32_t prof_wf_us   = 0, prof_wf_max   = 0, prof_wf_n   = 0;
+static uint32_t prof_qmax    = 0;   // max liveDumpQueue depth sampled per loop()
+static uint32_t prof_over18  = 0;   // loop() iterations sampled with depth >= 18
+
 void setup() {
-  Serial.begin(115200);
+  Serial.begin(460800);
   pinMode(15, OUTPUT); digitalWrite(15, HIGH);
   pinMode(21, OUTPUT); digitalWrite(21, HIGH);
   pinMode(5, OUTPUT);  digitalWrite(5, HIGH);
@@ -133,10 +152,14 @@ void loop() {
   // ==========================================
   // BACKGROUND DATA ENGINES (Run every tick)
   // ==========================================
-  processPendingVendors();
+  { UBaseType_t _q = uxQueueMessagesWaiting(liveDumpQueue);
+    if (_q > prof_qmax) prof_qmax = _q;
+    if (_q >= 18) prof_over18++; }
+
+  PROF_TIME(processPendingVendors(), prof_pend_us, prof_pend_max, prof_pend_n);
   runProbeCorrelationEngine(); 
-  processLiveDumpQueue();
-  processLeakQueue();
+  PROF_TIME(processLiveDumpQueue(), prof_dump_us, prof_dump_max, prof_dump_n);
+  PROF_TIME(processLeakQueue(), prof_leak_us, prof_leak_max, prof_leak_n);
   
   uint16_t t_x = 0, t_y = 0;
   bool should_render = false;
@@ -179,7 +202,7 @@ void loop() {
 
     // --- FULL REDRAW GRAPHICS ENGINES ---
     if (currentState == SCREEN_CHART) {
-        drawWaterfallChart();
+        PROF_TIME(drawWaterfallChart(), prof_wf_us, prof_wf_max, prof_wf_n);
     } else if (currentState == SCREEN_DEVICE_LIST) {
         drawDeviceList();
     } else if (currentState == SCREEN_AP_SCAN) {
@@ -204,6 +227,9 @@ if (millis() - last_debug_print > 3000) {
     uint32_t f_suppressed = leak_funnel_suppressed;
     uint32_t f_shipped    = leak_funnel_shipped;
     uint32_t ld_drop      = live_dump_dropped;
+    uint32_t ui_t         = ui_total_arrived;
+    uint32_t ui_d         = ui_dropped_packets;
+    uint32_t cons         = live_dump_consumed;
 
     Serial.printf(
         "[DIAG] Funnel: Seen=%u | Suppressed=%u | Shipped=%u\n",
@@ -227,10 +253,49 @@ if (millis() - last_debug_print > 3000) {
         ESP.getFreeHeap()
     );
 
+    Serial.printf(
+        "[DIAG] Diversity stack high-water: %u bytes free\n",
+        (unsigned)g_div_stack_highwater
+    );
+
+    uint32_t pend_ms = prof_pend_us / 1000, pend_mx = prof_pend_max / 1000;
+    uint32_t dump_ms = prof_dump_us / 1000, dump_mx = prof_dump_max / 1000;
+    uint32_t leak_ms = prof_leak_us / 1000, leak_mx = prof_leak_max / 1000;
+    uint32_t wf_ms   = prof_wf_us   / 1000, wf_mx   = prof_wf_max   / 1000;
+    uint32_t pend_avg = prof_pend_n ? prof_pend_us / prof_pend_n : 0;
+    uint32_t dump_avg = prof_dump_n ? prof_dump_us / prof_dump_n : 0;
+    uint32_t leak_avg = prof_leak_n ? prof_leak_us / prof_leak_n : 0;
+    uint32_t wf_avg   = prof_wf_n   ? prof_wf_us   / prof_wf_n   : 0;
+
+    Serial.printf(
+        "[PROF] PEND n=%u tot=%ums max=%ums avg=%uus | DUMP n=%u tot=%ums max=%ums avg=%uus | LEAK n=%u tot=%ums max=%ums avg=%uus | WF n=%u tot=%ums max=%ums avg=%uus\n",
+        (unsigned)prof_pend_n, (unsigned)pend_ms, (unsigned)pend_mx, (unsigned)pend_avg,
+        (unsigned)prof_dump_n, (unsigned)dump_ms, (unsigned)dump_mx, (unsigned)dump_avg,
+        (unsigned)prof_leak_n, (unsigned)leak_ms, (unsigned)leak_mx, (unsigned)leak_avg,
+        (unsigned)prof_wf_n,   (unsigned)wf_ms,   (unsigned)wf_mx,   (unsigned)wf_avg
+    );
+
+    Serial.printf(
+        "[PROF] qmax=%u over18=%u cons=%u | uiTot=%u uiDrop=%u ldDrop=%u\n",
+        (unsigned)prof_qmax, (unsigned)prof_over18, (unsigned)cons,
+        (unsigned)ui_t, (unsigned)ui_d, (unsigned)ld_drop
+    );
+
     leak_funnel_seen       = 0;
     leak_funnel_suppressed = 0;
     leak_funnel_shipped    = 0;
     live_dump_dropped      = 0;
+    live_dump_consumed     = 0;
+    ui_total_arrived       = 0;
+    ui_dropped_packets     = 0;
+    leak_displayed         = 0;
+
+    prof_pend_us = prof_pend_max = prof_pend_n = 0;
+    prof_dump_us = prof_dump_max = prof_dump_n = 0;
+    prof_leak_us = prof_leak_max = prof_leak_n = 0;
+    prof_wf_us   = prof_wf_max   = prof_wf_n   = 0;
+    prof_qmax    = 0;
+    prof_over18  = 0;
 
     leak_isr_attempts      = 0;
     leak_isr_dropped       = 0;
@@ -240,7 +305,7 @@ if (millis() - last_debug_print > 3000) {
     if (currentState == SCREEN_CHART &&
         currentRadioMode == RADIO_PCAP) {
 
-        drawTelemetryHeader();
+        drawTelemetryHeader(pcap_displayed_total, pcap_upstream_total, pcap_upstream_total);
     }
 
     last_debug_print = millis();

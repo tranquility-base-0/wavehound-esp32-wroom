@@ -15,7 +15,6 @@ extern LeakSortMode currentLeakSort;
 extern volatile uint32_t capture_bytes_tick;
 extern uint32_t capture_bytes_render;
 extern PacketCapture terminal_history[MAX_TERMINAL_LINES];
-extern uint16_t terminal_hits[MAX_TERMINAL_LINES];
 extern uint32_t terminal_first_seen[MAX_TERMINAL_LINES];
 extern volatile uint32_t debug_dropped_packets;
 extern volatile uint32_t ui_total_arrived;
@@ -26,6 +25,11 @@ extern volatile uint32_t leak_funnel_seen;
 extern volatile uint32_t leak_funnel_suppressed;
 extern volatile uint32_t leak_funnel_shipped;
 extern volatile uint32_t live_dump_dropped;
+extern volatile uint32_t live_dump_consumed;
+extern volatile uint32_t leak_displayed;
+extern volatile uint32_t g_div_stack_highwater;
+extern volatile uint32_t pcap_upstream_total;   // cumulative: liveDumpQueue enqueues + bypass leaks
+extern volatile uint32_t pcap_displayed_total;  // cumulative: distinct leaks surfaced (waterfall numerator)
 extern uint32_t leak_core1_attempts;
 extern uint32_t leak_core1_dropped;
 extern uint32_t traffic_history[240];

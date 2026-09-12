@@ -352,6 +352,11 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
             esp_wifi_set_promiscuous(true); 
         }
         
+        // Restore the software capture gate (the MENU path raised it and the
+        // EXIT path used to leave it set, deadlocking capture for up to the
+        // next runProbeCorrelationEngine cycle).
+        pause_sniffing = false;
+
         if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {
           esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
         } else if (currentRadioMode != RADIO_BLE) {

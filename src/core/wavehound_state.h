@@ -65,6 +65,7 @@ struct CryptoAlertCache {
 struct PacketMeta {
     uint32_t timestamp;
     uint32_t flow_hash;
+    uint16_t flow_count;
     uint16_t src_port;
     uint16_t dst_port;
     uint16_t frame_length;

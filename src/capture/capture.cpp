@@ -62,7 +62,6 @@ LeakSortMode currentLeakSort = SORT_LEAK_AGE; // Default
 volatile uint32_t capture_bytes_tick = 0;
 uint32_t capture_bytes_render = 0;
 PacketCapture terminal_history[MAX_TERMINAL_LINES];
-uint16_t terminal_hits[MAX_TERMINAL_LINES] = {0};
 uint32_t terminal_first_seen[MAX_TERMINAL_LINES] = {0};
 
 volatile uint32_t debug_dropped_packets = 0;
@@ -77,6 +76,14 @@ volatile uint32_t leak_funnel_seen       = 0;
 volatile uint32_t leak_funnel_suppressed = 0;
 volatile uint32_t leak_funnel_shipped    = 0;
 volatile uint32_t live_dump_dropped      = 0;
+volatile uint32_t live_dump_consumed     = 0;
+volatile uint32_t leak_displayed         = 0;
+// Cumulative (session) PCAP waterfall counters. NOT reset by the 3 s DIAG
+// block: the header invariant (displayed <= upstream) only holds cumulatively,
+// because displayed/ship happen on different cores at different pipeline
+// stages. Attempted also counts the leakQueue bypass paths (deauth + crypto).
+volatile uint32_t pcap_upstream_total    = 0; // enqueued into liveDumpQueue + leakQueue bypass enqueues
+volatile uint32_t pcap_displayed_total   = 0; // leaks surfaced by processLeakQueue
 // Core 1 — processLiveDumpQueue() repush after parsing
 uint32_t leak_core1_attempts = 0;
 uint32_t leak_core1_dropped  = 0;
@@ -652,6 +659,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       if (leakQueue != NULL) {
           leak_isr_attempts++;
           if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) leak_isr_dropped++;
+          else pcap_upstream_total++; // cumulative: bypass leak accounted for display parity
       }
       // Fire directly to the UI, completely bypassing the Data parser
       //if (leakQueue != NULL) xQueueSendFromISR(leakQueue, &leak, NULL);
@@ -1009,6 +1017,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   live_evt.meta.timestamp     = now_ms;
                   live_evt.meta.frame_length  = pkt->rx_ctrl.sig_len;
                   live_evt.meta.flow_hash     = current_hash;
+                  live_evt.meta.flow_count    = flow_cache[cache_idx].count;
 
                   live_evt.meta.src_port      = captured_src_port;
                   live_evt.meta.dst_port      = captured_dst_port;
@@ -1022,9 +1031,31 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   live_evt.meta.direction     = captured_direction;
                   live_evt.meta.frame_subtype = captured_subtype;
 
-                  memcpy(live_evt.meta.bssid,   mac3,         6);
-                  memcpy(live_evt.meta.src_mac, payload + 10, 6);
-                  memcpy(live_evt.meta.dst_mac, payload + 4,  6);
+                  // DS-aware 802.11 address mapping (mirrors Smart Endpoint
+                  // Identification below). addr1=payload+4, addr2=payload+10,
+                  // addr3=mac3=payload+16; addr4 (WDS) at payload+24.
+                  // 01 STA->AP: addr1=BSSID addr2=SA addr3=DA
+                  // 10 AP->STA: addr1=DA   addr2=BSSID addr3=SA
+                  // 00 IBSS:    addr1=DA   addr2=SA    addr3=BSSID
+                  // 11 WDS: addr4=SA, addr3=DA; no 3-addr BSSID convention,
+                  //         so bssid stays zeroed (existing absent-value form).
+                  if (to_ds && !from_ds) {
+                      memcpy(live_evt.meta.src_mac, payload + 10, 6);  // addr2 = SA
+                      memcpy(live_evt.meta.dst_mac, mac3,         6);  // addr3 = DA
+                      memcpy(live_evt.meta.bssid,   payload + 4,  6);  // addr1 = BSSID
+                  } else if (from_ds && !to_ds) {
+                      memcpy(live_evt.meta.src_mac, mac3,         6);  // addr3 = SA
+                      memcpy(live_evt.meta.dst_mac, payload + 4,  6);  // addr1 = DA
+                      memcpy(live_evt.meta.bssid,   payload + 10, 6);  // addr2 = BSSID
+                  } else if (to_ds && from_ds) {
+                      memcpy(live_evt.meta.src_mac, payload + 24, 6);  // addr4 = SA (WDS)
+                      memcpy(live_evt.meta.dst_mac, mac3,         6);  // addr3 = DA
+                      // bssid left zeroed: no three-address BSSID in WDS
+                  } else {
+                      memcpy(live_evt.meta.src_mac, payload + 10, 6);  // addr2 = SA
+                      memcpy(live_evt.meta.dst_mac, payload + 4,  6);  // addr1 = DA
+                      memcpy(live_evt.meta.bssid,   mac3,         6);  // addr3 = BSSID
+                  }
 
                   memcpy(live_evt.meta.src_ip, captured_src_ip, 16);
                   memcpy(live_evt.meta.dst_ip, captured_dst_ip, 16);
@@ -1083,6 +1114,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                           live_dump_dropped++;
                       } else {
                           leak_funnel_shipped++; // <-- IT BELONGS EXACTLY HERE
+                          pcap_upstream_total++;  // cumulative: successful liveDumpQueue enqueue
                       }
                   }
 
@@ -1170,6 +1202,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
     if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) {
         leak_isr_dropped++;
+    } else {
+        pcap_upstream_total++; // cumulative: bypass leak accounted for display parity
     }
 }
                   }
@@ -1349,6 +1383,7 @@ void processLiveDumpQueue() {
     while (packets_processed < 5 &&
        xQueueReceive(liveDumpQueue, &live_evt, 0) == pdTRUE) {
         packets_processed++;
+        live_dump_consumed++;
 
         memset(temp_text, 0, sizeof(temp_text));
         bool custom_extracted = false;
@@ -1932,6 +1967,11 @@ void resetMonitorState() {
   sessionApCount = 0;
   sessionChannelCount = 0;
 
+  // Session reset: the waterfall's cumulative counters start over here too.
+  // They are deliberately NOT touched by the 3 s DIAG reset block.
+  pcap_upstream_total  = 0;
+  pcap_displayed_total = 0;
+
   pause_sniffing = false;
 }
 void processPcapData() {
@@ -1963,7 +2003,7 @@ void logLeakToSerial(const PacketCapture& leak, const char* src_vendor,
     }
 
     Serial.printf(
-        "🚨 LEAK [%s] | BSSID(SSID): %02X:%02X:%02X:%02X:%02X:%02X (%s) | "
+        "🚨 CLRTXT [%s] | BSSID(SSID): %02X:%02X:%02X:%02X:%02X:%02X (%s) | "
         "Src MAC: %02X:%02X:%02X:%02X:%02X:%02X (%s) [%s:%u] -> "
         "Dst MAC: %02X:%02X:%02X:%02X:%02X:%02X (%s) [%s:%u] | "
         "Ch: %u | Text: %s\n",
@@ -1983,6 +2023,120 @@ void logLeakToSerial(const PacketCapture& leak, const char* src_vendor,
         leak.text
     );
 }
+
+// ============================================================================
+// Exact character-trigram Jaccard diversity (incoming-only scoring aid).
+//   novelty = 1 - max over retained entries of trigramJaccard(text_in, text_ret)
+// Returns 256 * novelty in [0, 256]. O(20) comparisons.
+//
+// Scratch is TRANSIENT STACK storage (freed on return; no .bss). Exact full-
+// payload comparison needs two 512-entry uint32 arrays (~4 KB), which cannot be
+// static on this device. Normalization is position-preserving (ascii lowercase +
+// map whitespace); the character alphabet is NOT collapsed, so this is exact
+// trigram Jaccard over the full cleartext payload.
+// ============================================================================
+
+// Worst-case free stack (bytes) seen inside the diversity scorer, recorded each
+// call so the caller can verify headroom. On ESP32 StackType_t is uint8_t, so
+// uxTaskGetStackHighWaterMark() already returns bytes.
+volatile uint32_t g_div_stack_highwater = 0;
+
+static inline unsigned char tri_norm_char(unsigned char c) {
+    if (c >= 'A' && c <= 'Z') c += (unsigned char)('a' - 'A');
+    if (c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v') c = ' ';
+    return c;
+}
+
+static inline uint32_t trigram_code(const char* s, int i) {
+    unsigned char a = tri_norm_char((unsigned char)s[i]);
+    unsigned char b = tri_norm_char((unsigned char)s[i + 1]);
+    unsigned char c = tri_norm_char((unsigned char)s[i + 2]);
+    return ((uint32_t)a << 16) | ((uint32_t)b << 8) | (uint32_t)c;
+}
+
+static inline int tri_text_len(const char* s) {
+    int n = 0;
+    while (n < MAX_LEAK_STR_LEN && s[n] != '\0') ++n;
+    return n;
+}
+
+// In-place heapsort over uint32 (no recursion, bounded stack).
+static void hsort_u32(uint32_t* a, int n) {
+    for (int i = n / 2 - 1; i >= 0; --i) {
+        int p = i;
+        for (;;) {
+            int l = 2 * p + 1, r = 2 * p + 2, m = p;
+            if (l < n && a[l] > a[m]) m = l;
+            if (r < n && a[r] > a[m]) m = r;
+            if (m == p) break;
+            uint32_t t = a[p]; a[p] = a[m]; a[m] = t;
+            p = m;
+        }
+    }
+    for (int i = n - 1; i > 0; --i) {
+        uint32_t t = a[0]; a[0] = a[i]; a[i] = t;
+        int p = 0;
+        for (;;) {
+            int l = 2 * p + 1, r = 2 * p + 2, m = p;
+            if (l < i && a[l] > a[m]) m = l;
+            if (r < i && a[r] > a[m]) m = r;
+            if (m == p) break;
+            uint32_t t2 = a[p]; a[p] = a[m]; a[m] = t2;
+            p = m;
+        }
+    }
+}
+
+static int incoming_diversity_bonus(const PacketCapture& incoming) {
+    // Transient stack scratch: two arrays sized for the full payload (up to
+    // MAX_LEAK_STR_LEN-2 = 510 trigrams each). Freed on return.
+    uint32_t keys_a[MAX_LEAK_STR_LEN];
+    uint32_t keys_b[MAX_LEAK_STR_LEN];
+
+    // Record worst-case free stack (bytes) at this deepest point.
+    g_div_stack_highwater = uxTaskGetStackHighWaterMark(NULL);
+
+    int la = tri_text_len(incoming.text);
+    int na = (la >= 3) ? (la - 2) : 0;
+    for (int i = 0; i < na; ++i) keys_a[i] = trigram_code(incoming.text, i);
+    if (na > 0) hsort_u32(keys_a, na);
+    int ua = 0;
+    for (int i = 0; i < na; ++i)
+        if (i == 0 || keys_a[i] != keys_a[i - 1]) keys_a[ua++] = keys_a[i];
+
+    int best_inter = 0;   // max similarity = best_inter / best_union
+    int best_union = 0;
+
+    for (int j = 0; j < MAX_LEAK_SLOTS; ++j) {
+        if (leakHistory[j].leak.meta.timestamp == 0) continue;
+
+        int lb = tri_text_len(leakHistory[j].leak.text);
+        int nb = (lb >= 3) ? (lb - 2) : 0;
+        for (int i = 0; i < nb; ++i) keys_b[i] = trigram_code(leakHistory[j].leak.text, i);
+        if (nb > 0) hsort_u32(keys_b, nb);
+        int ub = 0;
+        for (int i = 0; i < nb; ++i)
+            if (i == 0 || keys_b[i] != keys_b[i - 1]) keys_b[ub++] = keys_b[i];
+
+        int inter = 0, x = 0, y = 0;
+        while (x < ua && y < ub) {
+            if (keys_a[x] == keys_b[y]) { ++inter; ++x; ++y; }
+            else if (keys_a[x] < keys_b[y]) ++x;
+            else ++y;
+        }
+
+        int un = ua + ub - inter;
+        if (un <= 0) continue;
+        if (best_union == 0 || inter * best_union > best_inter * un) {
+            best_inter = inter;
+            best_union = un;
+        }
+    }
+
+    if (best_union == 0) return 256;   // nothing comparable -> fully novel
+    return 256 - (256 * best_inter) / best_union;
+}
+
 void processLeakQueue() {
     if (leakQueue == NULL) return;
 
@@ -2053,9 +2207,6 @@ void processLeakQueue() {
 
         if (foundTerminalMatch) {
 
-            // Existing terminal entry: increment hits
-            terminal_hits[matchIndex]++;
-
             // Refresh last-seen timestamp
             terminal_history[matchIndex].meta.timestamp =
                 incomingLeak.meta.timestamp;
@@ -2066,9 +2217,6 @@ void processLeakQueue() {
                 PacketCapture tempCap =
                     terminal_history[matchIndex];
 
-                uint16_t tempHits =
-                    terminal_hits[matchIndex];
-
                 uint32_t tempFirst =
                     terminal_first_seen[matchIndex];
 
@@ -2076,15 +2224,11 @@ void processLeakQueue() {
                     terminal_history[t] =
                         terminal_history[t - 1];
 
-                    terminal_hits[t] =
-                        terminal_hits[t - 1];
-
                     terminal_first_seen[t] =
                         terminal_first_seen[t - 1];
                 }
 
                 terminal_history[0] = tempCap;
-                terminal_hits[0] = tempHits;
                 terminal_first_seen[0] = tempFirst;
             }
 
@@ -2099,15 +2243,11 @@ void processLeakQueue() {
                 terminal_history[t] =
                     terminal_history[t - 1];
 
-                terminal_hits[t] =
-                    terminal_hits[t - 1];
-
                 terminal_first_seen[t] =
                     terminal_first_seen[t - 1];
             }
 
             terminal_history[0] = incomingLeak;
-            terminal_hits[0] = 1;
             terminal_first_seen[0] =
                 incomingLeak.meta.timestamp;
 
@@ -2135,7 +2275,13 @@ void processLeakQueue() {
 
                 // Existing persistent entry.
                 // Do NOT run the eviction engine.
-                leakHistory[i].hitCount++;
+                // [xN] = receptions of THIS entry's canonical payload only.
+                if (incomingLeak.meta.flow_hash == leakHistory[i].flow_hash &&
+                    incomingLeak.meta.flow_count > 0) {
+                    leakHistory[i].hitCount = incomingLeak.meta.flow_count;
+                }
+                // (a different payload sharing the same src+text, or a
+                //  funnel-bypass leak with flow_count==0, must not alter the count)
 
                 // Refresh last-seen timestamp.
                 leakHistory[i].leak.meta.timestamp =
@@ -2182,6 +2328,8 @@ void processLeakQueue() {
                 }
             }
 
+            leak_displayed++;
+            pcap_displayed_total++; // cumulative waterfall numerator (session total)
             logLeakToSerial(incomingLeak, resolved_src_vendor, resolved_dst_vendor, safeSsid);
 
             // ==========================================
@@ -2222,7 +2370,8 @@ void processLeakQueue() {
 
                 int incoming_score = incomingLeak.retained_len;
                 if (incoming_score == 0) incoming_score = strlen(incomingLeak.text);
-                if (incomingLeak.meta.is_high_value) incoming_score += 10000;
+                if (incomingLeak.meta.is_high_value) incoming_score += 300;
+                incoming_score += incoming_diversity_bonus(incomingLeak);
 
                 if (incoming_score > min_score) {
                     targetIndex = victim_idx;
@@ -2234,7 +2383,7 @@ void processLeakQueue() {
             // ==========================================
             if (targetIndex != -1) {
                 leakHistory[targetIndex].leak = incomingLeak;
-                leakHistory[targetIndex].hitCount = 1;
+                leakHistory[targetIndex].hitCount = (incomingLeak.meta.flow_count > 0) ? incomingLeak.meta.flow_count : 1;
                 leakHistory[targetIndex].first_seen = incomingLeak.meta.timestamp;
                 leakHistory[targetIndex].flow_hash = incomingLeak.meta.flow_hash;
                 strcpy(leakHistory[targetIndex].src_vendor, resolved_src_vendor);

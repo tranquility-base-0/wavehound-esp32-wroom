@@ -16,34 +16,19 @@
 
 #include "foxhunt.h"
 
-void drawTelemetryHeader() {
-    // 1. Snapshot the volatile variables
-    uint32_t current_total = ui_total_arrived;
-    uint32_t current_drops = ui_dropped_packets;
-
-    // 2. Reset the counters for the next 3-second window
-    ui_total_arrived = 0;
-    ui_dropped_packets = 0;
-
-    // 3. Calculate how many successfully entered the queue
-    uint32_t current_processed = 0;
-    if (current_total > current_drops) {
-        current_processed = current_total - current_drops;
-    }
-
-    // 4. MATCH THE "OTHER" BANNER STYLING
-    tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+void drawTelemetryHeader(uint32_t leaks, uint32_t enqueued, uint32_t attempted) {
+    // Pure renderer: values are snapshotted and reset in loop()'s DIAG block.
+    tft.setFreeFont(&UbuntuMono_Regular8pt7b);
     tft.setTextDatum(TL_DATUM); 
     tft.setTextColor(COLOR_HOT_CHEST, TFT_BLACK);
     
-    // 5. Erase the old numbers (Aligned to the OTHER wipe zone, but slightly wider)
+    // Erase the old numbers (Aligned to the OTHER wipe zone)
     tft.fillRect(285, 0, 135, 20, TFT_BLACK); 
     
-    // 6. Format with strict 3-digit padding to prevent text jitter
+    // displayed / enqueued / attempted — 4-digit fields to prevent jitter
     char stat_text[32];
-    snprintf(stat_text, sizeof(stat_text), "Pkts:%3u/%3u", current_processed, current_total);
+    snprintf(stat_text, sizeof(stat_text), "%4u/%4u/%4u", leaks, enqueued, attempted);
     
-    // 7. Draw the string exactly where OTHER goes
     tft.drawString(stat_text, 285, 1);
 }
 void drawChartHeader() {
@@ -722,11 +707,10 @@ if (terminal_history[i].meta.ip_version == 6) {
                     }
                 }
 
-                // --- ROW 1: [xHit] MAC(Vend)>MAC(Vend)|Len|C ---
+                // --- ROW 1: MAC(Vend)>MAC(Vend)|Len|C ---
                 tft.setTextColor(TFT_CYAN);
                 char line1[80];
-                snprintf(line1, sizeof(line1), "[x%d]%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d", 
-                         terminal_hits[i],
+                snprintf(line1, sizeof(line1), "%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d",
                          terminal_history[i].meta.src_mac[0], terminal_history[i].meta.src_mac[1], terminal_history[i].meta.src_mac[2],
                          terminal_history[i].meta.src_mac[3], terminal_history[i].meta.src_mac[4], terminal_history[i].meta.src_mac[5],
                          srcVend,

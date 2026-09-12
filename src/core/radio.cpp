@@ -259,6 +259,12 @@ void switchRadioMode(RadioMode targetMode) {
   
   // 4. Open the gate!
   pause_sniffing = false; 
+
+  // Session reset for the cumulative PCAP waterfall counters (matching the
+  // wipe above); reset AFTER the gate opens so no in-flight callback can
+  // re-increment between the zeroing and the mode change.
+  pcap_upstream_total  = 0;
+  pcap_displayed_total = 0;
 }
 
 bool updateRadioHopper() {
