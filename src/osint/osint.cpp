@@ -14,6 +14,40 @@ SSIDNode ssidPool[TOTAL_SSID_POOL];
 int probe_current_page = 0; 
 const int PROBES_PER_PAGE = 5;
 int total_sniffed_probes = 0;
+// File-local helper: exact SSID-history confirmation for isSameDevice().
+// Walks the two records' first_ssid_idx -> ssidPool linked lists and returns
+// true if at least one exact common SSID exists. Wildcard entries are skipped
+// consistently with crossReferenceProbeToBeacons()'s matching convention.
+// Worst case: EMERGENCY_CUTOFF x EMERGENCY_CUTOFF = 225 strcmp per pair.
+static bool exact_ssid_lists_intersect(int idxA, int idxB) {
+    int nodeA = probeList[idxA].first_ssid_idx;
+
+    while (nodeA != -1) {
+        // Skip wildcard/sentinel entries (same convention as
+        // crossReferenceProbeToBeacons, osint.cpp)
+        if (ssidPool[nodeA].text[0] != '\0' &&
+            strcmp(ssidPool[nodeA].text, "<Wld>") != 0 &&
+            strcmp(ssidPool[nodeA].text, "<Nul>") != 0) {
+
+            int nodeB = probeList[idxB].first_ssid_idx;
+
+            while (nodeB != -1) {
+                if (ssidPool[nodeB].text[0] != '\0' &&
+                    strcmp(ssidPool[nodeB].text, "<Wld>") != 0 &&
+                    strcmp(ssidPool[nodeB].text, "<Nul>") != 0 &&
+                    strcmp(ssidPool[nodeA].text, ssidPool[nodeB].text) == 0) {
+                    return true; // At least one exact common SSID
+                }
+                nodeB = ssidPool[nodeB].next_node_idx;
+            }
+        }
+
+        nodeA = ssidPool[nodeA].next_node_idx;
+    }
+
+    return false;
+}
+
 bool isSameDevice(int idxA, int idxB) {
     // GATE 1: HARDWARE (Strict pass/fail)
     if (probeList[idxA].hardware_hash != probeList[idxB].hardware_hash) {
@@ -29,7 +63,13 @@ bool isSameDevice(int idxA, int idxB) {
     if (hashA == hashB && hashA != 0) {
         confidence_score += 50; // Exact match of non-empty networks
     } else if ((hashA & hashB) == hashB || (hashA & hashB) == hashA) {
-        confidence_score += 30; // Perfect subset match
+        // Step 6 tightening: +30 only with evidence. Both bitmaps must be
+        // non-zero (an empty bitmap proves nothing), and the containment
+        // claim must be confirmed by at least one exact common SSID in the
+        // existing first_ssid_idx -> ssidPool histories.
+        if (hashA != 0 && hashB != 0 && exact_ssid_lists_intersect(idxA, idxB)) {
+            confidence_score += 30; // Perfect subset match (exact-confirmed)
+        }
     }
 
     // GATE 3: SPATIAL (Scoring)
