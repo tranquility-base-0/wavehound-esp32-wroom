@@ -1191,9 +1191,28 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       leak.meta.direction = payload[1] & 0x03;
                       leak.meta.channel = pkt->rx_ctrl.channel;
                       
-                      memcpy(leak.meta.src_mac, payload + 10, 6);
-                      memcpy(leak.meta.dst_mac, payload + 4, 6);
-                      memcpy(leak.meta.bssid, mac3, 6);
+                      // DS-aware 802.11 address mapping — same four-way form
+                      // as the cleartext funnel (capture.cpp). addr1=+4,
+                      // addr2=+10, addr3=mac3=+16, addr4=+24 (present: this
+                      // branch runs only under len > header_len + 4, and
+                      // header_len includes the +6 WDS address field).
+                      if (to_ds && !from_ds) {
+                          memcpy(leak.meta.src_mac, payload + 10, 6);  // addr2 = SA
+                          memcpy(leak.meta.dst_mac, mac3,         6);  // addr3 = DA
+                          memcpy(leak.meta.bssid,   payload + 4,  6);  // addr1 = BSSID
+                      } else if (from_ds && !to_ds) {
+                          memcpy(leak.meta.src_mac, mac3,         6);  // addr3 = SA
+                          memcpy(leak.meta.dst_mac, payload + 4,  6);  // addr1 = DA
+                          memcpy(leak.meta.bssid,   payload + 10, 6);  // addr2 = BSSID
+                      } else if (to_ds && from_ds) {
+                          memcpy(leak.meta.src_mac, payload + 24, 6);  // addr4 = SA (WDS)
+                          memcpy(leak.meta.dst_mac, mac3,         6);  // addr3 = DA
+                          // bssid left zeroed: no three-address BSSID in WDS
+                      } else {
+                          memcpy(leak.meta.src_mac, payload + 10, 6);  // addr2 = SA
+                          memcpy(leak.meta.dst_mac, payload + 4,  6);  // addr1 = DA
+                          memcpy(leak.meta.bssid,   mac3,         6);  // addr3 = BSSID
+                      }
 
                       strncpy(leak.text, temp_text, MAX_LEAK_STR_LEN - 1);
                       
