@@ -306,7 +306,7 @@ if (millis() - last_debug_print > 3000) {
     if (currentState == SCREEN_CHART &&
         currentRadioMode == RADIO_PCAP) {
 
-        drawTelemetryHeader(pcap_displayed_total, pcap_upstream_total, pcap_upstream_total);
+        drawTelemetryHeader(pcap_displayed_total, pcap_upstream_total, pcap_cooldown_total);
     }
 
     last_debug_print = millis();

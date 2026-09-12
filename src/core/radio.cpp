@@ -264,6 +264,7 @@ void switchRadioMode(RadioMode targetMode) {
   // wipe above); reset AFTER the gate opens so no in-flight callback can
   // re-increment between the zeroing and the mode change.
   pcap_upstream_total  = 0;
+  pcap_cooldown_total  = 0;
   pcap_displayed_total = 0;
 }
 

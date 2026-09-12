@@ -83,6 +83,7 @@ volatile uint32_t leak_displayed         = 0;
 // because displayed/ship happen on different cores at different pipeline
 // stages. Attempted also counts the leakQueue bypass paths (deauth + crypto).
 volatile uint32_t pcap_upstream_total    = 0; // enqueued into liveDumpQueue + leakQueue bypass enqueues
+volatile uint32_t pcap_cooldown_total    = 0; // frames that passed the cooldown gate (pre-enqueue)
 volatile uint32_t pcap_displayed_total   = 0; // leaks surfaced by processLeakQueue
 // Core 1 — processLiveDumpQueue() repush after parsing
 uint32_t leak_core1_attempts = 0;
@@ -658,6 +659,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       // Fire directly to the UI, completely bypassing the Data parser
       if (leakQueue != NULL) {
           leak_isr_attempts++;
+          pcap_cooldown_total++;  // cumulative: bypass candidate accepted (waterfall z)
           if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) leak_isr_dropped++;
           else pcap_upstream_total++; // cumulative: bypass leak accounted for display parity
       }
@@ -1103,6 +1105,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
                                     if (liveDumpQueue != NULL) {
                       ui_total_arrived++;
+                      pcap_cooldown_total++;  // cumulative: passed the cooldown gate
 
                       if (xQueueSendFromISR(
                               liveDumpQueue,
@@ -1218,6 +1221,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       
                       if (leakQueue != NULL) {
     leak_isr_attempts++;
+    pcap_cooldown_total++; // cumulative: bypass candidate accepted (waterfall z)
 
     if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) {
         leak_isr_dropped++;
@@ -1989,6 +1993,7 @@ void resetMonitorState() {
   // Session reset: the waterfall's cumulative counters start over here too.
   // They are deliberately NOT touched by the 3 s DIAG reset block.
   pcap_upstream_total  = 0;
+  pcap_cooldown_total  = 0;
   pcap_displayed_total = 0;
 
   pause_sniffing = false;
@@ -2058,6 +2063,10 @@ void logLeakToSerial(const PacketCapture& leak, const char* src_vendor,
 // Worst-case free stack (bytes) seen inside the diversity scorer, recorded each
 // call so the caller can verify headroom. On ESP32 StackType_t is uint8_t, so
 // uxTaskGetStackHighWaterMark() already returns bytes.
+// NOTE: Diagnostic values (high-water, now, etc.) remain 0 until
+// incoming_diversity_bonus() is first invoked by the diversity-aware eviction
+// path; this may require enough distinct leak results to trigger
+// persistent-history eviction.
 volatile uint32_t g_div_stack_highwater = 0;
 
 // Instantaneous loopTask stack margin at this probe point (bytes free above
