@@ -26,16 +26,20 @@ _pending — capture → filter → 30-second cooldown → queue → parse → d
 
 ## Capture counters and display views
 
-The header at the top of the real-time screen shows three numbers, for example
-`100/239/251`:
+The header at the top of the real-time screen shows three cumulative numbers, for
+example `100/239/251`. They form a funnel — the intended relationship is
+x ≤ y ≤ z — and all three reset only on a session/mode reset, not per interval:
 
-- **First number — distinct leaks logged this session.** This counts genuinely new
-  leaks (a unique source-MAC + text pairing) that were written to the serial log.
-  It is *not* the number of rows drawn on the LCD, despite the "made it to screen"
-  phrasing used during development.
-- **Second number — frames enqueued** to the capture queue (the "Shipped" count).
-- **Third number — frames attempted** (the "arrived" count, of which some were
-  dropped because the queue was full).
+- **x — leaks logged/displayed.** Distinct leak results that made it through
+  processing and were written to the serial log (a unique source-MAC + text
+  pairing). It is *not* the number of rows drawn on the LCD, despite the "made it
+  to screen" phrasing used during development.
+- **y — successfully enqueued.** Events actually placed into a queue, including
+  the deauth and crypto/WEP-TKIP bypass paths.
+- **z — accepted into the pipeline.** Events that passed their applicable
+  acceptance/cooldown gate and proceeded toward queueing, again including the
+  bypass paths. A queue-full event therefore counts toward z but not y; the gap
+  y-to-z measures frames accepted but never enqueued.
 
 The point worth settling early: the first number can reach 100+ per cycle while the
 screen can only ever show a handful of rows. That is expected and healthy. Every
@@ -63,6 +67,90 @@ five and a "best-of" list of twenty — while serial remains the authoritative m
 
 _pending — [xN] is the number of times the exact full-payload frame represented by a
 row was received, including copies suppressed by the 30-second cooldown._
+
+## Probe request tracking
+
+When a device scans for networks, it broadcasts probe request frames announcing
+the network names (SSIDs) it is looking for. These frames reveal a device's
+history — every network it has previously joined — which makes them rich
+identification evidence. Wavehound tracks this in its probe tracker view.
+
+### Randomized MACs
+
+Modern phones and laptops randomize the transmitter MAC address in probe
+requests (the locally-administered bit is set on the address), rotating to a
+new identity periodically so the same phone appears as many different "devices".
+Wavehound detects this (`mac[0] & 0x02`) and applies two rules:
+
+- A physical (non-randomized) MAC always passes, and its vendor is resolved
+  from the OUI database.
+- A randomized MAC passes only if the probe carries a real, printable SSID —
+  a randomized probe for a wildcard (hidden-network) sweep carries no useful
+  identity, so it is not tracked.
+
+For randomized MACs, the vendor shown is *inferred* from Vendor Specific
+information elements (IE tag 221) in the probe itself when present (e.g.
+"Apple~IE"); otherwise it falls to SD-card OUI resolution of the transient
+address, which for randomized MACs usually resolves to the chip maker rather
+than the phone brand.
+
+### IE-based device fingerprinting (hardware hash)
+
+Every tracked probe builds a 32-bit fingerprint from the probe's information
+elements:
+
+- The **tag numbers** of every IE present are hashed in order, capturing the
+  structural skeleton of the frame (which capabilities the chipset advertises).
+- The **complete payload bytes** of three relatively stable IEs are also
+  hashed: tag 45 (HT Capabilities), tag 127 (Extended Capabilities), and
+  tag 221 (Vendor Specific).
+
+This is best understood as an *implementation fingerprint* rather than a true
+hardware identity: it fingerprints the chipset/driver's IE composition. It is
+strict equality — a device that omits or reorders an information element
+between probes can produce different hashes for the same radio, so it is one
+signal, not proof.
+
+### PNL (Preferred Network List) evidence
+
+Each tracked device accumulates two forms of "where has this device been"
+evidence:
+
+- **Exact SSID history** — the real strings, deduplicated, in a per-device
+  list (up to 15 entries, drawn from a shared 150-slot pool).
+- **A 64-bit bitmap** (`pnl_hash`) — each SSID folds to one bit via a djb2
+  hash mod 64. This is cheap and mergeable, but lossy: two different SSIDs
+  collide into the same bit about 1 time in 64, so the bitmap is a hint, not
+  proof. Wildcard probes (`<Wld>` for broadcast sweeps, `<Nul>` for
+  blank/hidden names) are recorded but deliberately excluded from the bitmap.
+
+### Smart endpoint identification (correlation)
+
+Because a rotating MAC makes one phone look like five, the tracker runs a
+background correlation pass (every ~5 s) that tries to merge records that are
+probably the same physical device — this is the "Smart Endpoint
+Identification" logic. Two records are compared with:
+
+1. **Hardware gate** — the IE fingerprints (above) must match exactly.
+   Mismatched fingerprints are never merged.
+2. **Network evidence** — the two devices' PNL bitmaps are compared. An
+   identical non-empty bitmap scores +50; a subset/superset relationship
+   scores +30, but only when both devices have actually probed networks and
+   the exact SSID histories share at least one real network name (empty
+   bitmaps and bitmap-only coincidences score nothing).
+3. **Spatial evidence** — instantaneous RSSI within 5 dB scores +40;
+   more than 15 dB apart subtracts 50.
+
+A merge needs a total of 70+ points. On a merge, the newer MAC and
+timestamps are adopted, hit counters and MAC-rotation counts accumulate, and
+the exact SSID lists are unioned — so a device that has rotated MACs twice
+shows one row with 3 rotations and the combined network history, instead of
+three separate entries.
+
+What correlation cannot do: it cannot merge a rotated MAC whose fingerprint
+changed between probes (the hard gate rejects it), and it cannot rescue two
+devices with identical chipsets that probe identical networks at similar
+signal strength — those are genuinely ambiguous from the air.
 
 ## Serial output
 
