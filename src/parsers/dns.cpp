@@ -76,7 +76,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
 
             if (offset + rdlength > length) break;
 
-            if (rr_type == 16) { // TXT — unchanged
+            if (rr_type == 16) { // TXT records
                 int txt_off = offset;
                 int txt_end = offset + rdlength;
 
@@ -123,7 +123,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                     valid_labels++;
                 }
             }
-            // NEW: AAAA / IPv6
+            // AAAA / IPv6
             else if (rr_type == 28 && rdlength == 16) {
                 char raw_ip6[48];
                 getIpString(6, &payload[offset], raw_ip6, sizeof(raw_ip6));
@@ -143,7 +143,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                 }
             }
             else if (rr_type == 12 || rr_type == 5) { // PTR / CNAME
-                append_dns_name(offset);  // CHANGED — return value still discarded, same as original
+                append_dns_name(offset);  // return value intentionally discarded
             }
             else if (rr_type == 33 && rdlength >= 7) { // SRV
                 uint16_t srv_port = (payload[offset+4] << 8) | payload[offset+5];

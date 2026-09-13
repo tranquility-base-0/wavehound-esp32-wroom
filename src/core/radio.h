@@ -30,7 +30,7 @@ extern int target_channel;
 extern bool target_locked;
 extern char target_ssid[33];
 
-// Cross-module dependencies (defined in main.cpp until their own phase)
+// Cross-module bridges: owned by main.cpp / ui / modes (see module layout notes).
 extern BLEScan* pBLEScan;
 extern bool is_foxhunting;
 extern uint8_t foxhunt_target_mac[6];

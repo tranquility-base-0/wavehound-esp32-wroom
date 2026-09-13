@@ -178,7 +178,7 @@ static bool parse_mqtt_publish(uint8_t flags, const uint8_t* remaining, uint32_t
 }
 
 bool parse_mqtt(const uint8_t* payload, uint16_t length, char* out_text, size_t max_len, bool& is_high_value) {
-    // FIXED: Explicitly reset the flag state to prevent false-positive leakage between packets
+    // Explicitly reset the flag state to prevent false-positive leakage between packets
     is_high_value = false;
 
     if (!payload || length < 2 || !out_text || max_len < 20) return false;

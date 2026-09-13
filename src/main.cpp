@@ -193,9 +193,6 @@ void loop() {
         // Snapshot the bytes for the UI and reset the ISR counter
         capture_bytes_render = capture_bytes_tick;
         capture_bytes_tick = 0;
-        // IF THIS PRINTS '0', THE ISR IS BROKEN.
-        // IF THIS PRINTS '4000', THE CHART GRAPHICS ARE BROKEN.
-        Serial.printf("PCAP Tick Vol: %u\n", capture_bytes_render);
     }
 
     pause_sniffing = false; // Unlock immediately!

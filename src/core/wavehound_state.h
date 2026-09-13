@@ -122,10 +122,10 @@ struct SSIDNode {
 
 struct ProbeRecordShared {
   // --- 8-byte variables ---
-  uint64_t pnl_hash;        // <--- NEW: 64-bit SSID Bloom Filter
+  uint64_t pnl_hash;        // 64-bit SSID Bloom filter
 
   // --- 4-byte variables ---
-  uint32_t hardware_hash;   // <--- NEW: 32-bit IE Tag Fingerprint
+  uint32_t hardware_hash;   // 32-bit IE tag fingerprint
   unsigned long first_seen;
   unsigned long last_seen;
   int first_ssid_idx;
@@ -173,7 +173,7 @@ struct BLERecord {
   uint8_t trackerType;
   int8_t rssi;
   int8_t txPower;
-  uint8_t namePriority;     // <--- ADDED BACK: Protects your Eddystone URLs
+  uint8_t namePriority;     // Protects Eddystone URLs
   char name[25];
   char payload[30];
 };
@@ -232,8 +232,8 @@ struct MacRecord {
     uint8_t mac[6];
     char vendor[28];
     int8_t rssi;
-    int8_t rssi_min;    // <--- NEW: spatial floor
-    int8_t rssi_max;    // <--- NEW: spatial ceiling
+    int8_t rssi_min;    // spatial floor
+    int8_t rssi_max;    // spatial ceiling
     uint8_t rate;
     bool vendorFound;
     bool needs_lookup;
@@ -241,7 +241,7 @@ struct MacRecord {
 
 struct OUICache {
   uint8_t oui[3];
-  char vendor[28]; // <--- Updated to match the new MacRecord limit
+  char vendor[28]; // matches the MacRecord vendor limit
 };
 
 struct BeaconEntry {

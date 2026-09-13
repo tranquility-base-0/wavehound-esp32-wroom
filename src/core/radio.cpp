@@ -271,7 +271,7 @@ void switchRadioMode(RadioMode targetMode) {
 bool updateRadioHopper() {
     bool trigger_render = false; // Local render trigger
 
-    // THE FIX: Added SCREEN_LEAK_LIST so the radio continues scanning the spectrum
+    // Include SCREEN_LEAK_LIST so the radio keeps scanning while the leak list is on screen.
     if (currentState == SCREEN_CHART || currentState == SCREEN_FOXHUNT || currentState == SCREEN_LEAK_LIST) {
         static unsigned long lastTimer = 0;
 

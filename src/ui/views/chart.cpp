@@ -17,15 +17,15 @@
 #include "foxhunt.h"
 
 void drawTelemetryHeader(uint32_t leaks, uint32_t enqueued, uint32_t attempted) {
-    // Pure renderer: values are snapshotted and reset in loop()'s DIAG block.
+    // Pure renderer: values are ~3 s window deltas computed in loop()'s DIAG block.
     tft.setFreeFont(&UbuntuMono_Regular8pt7b);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(COLOR_HOT_CHEST, TFT_BLACK);
 
-    // Erase the old numbers (Aligned to the OTHER wipe zone)
+    // Erase the previous tally before redrawing.
     tft.fillRect(285, 0, 135, 20, TFT_BLACK);
 
-    // displayed / enqueued / attempted — 4-digit fields to prevent jitter
+    // displayed / enqueued / gate-accepted (~3 s window) — 4-digit fields to prevent jitter
     char stat_text[32];
     snprintf(stat_text, sizeof(stat_text), "%4u/%4u/%4u", leaks, enqueued, attempted);
 

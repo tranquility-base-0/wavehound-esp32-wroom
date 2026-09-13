@@ -14,7 +14,6 @@
 #include <string.h>
 #include <stdio.h>
 
-// probe tracker (stays in main.cpp) + UI (stays in main.cpp)
 extern int current_x;
 int compareLeakAge(const void* a, const void* b);
 int compareLeakLength(const void* a, const void* b);
@@ -160,7 +159,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // ==========================================
 
   // ==========================================
-  // NEW: MODE-AGNOSTIC PASSIVE SSID SCRAPER
+  // MODE-AGNOSTIC PASSIVE SSID SCRAPER
   // Runs in ALL modes to silently maintain the BSSID Cache
   // ==========================================
   uint16_t fc = payload[0] | (payload[1] << 8);
@@ -258,7 +257,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           // If we successfully claimed a slot (either a new one or an evicted one)
           if (ap_index != -1) {
 
-            // --- NEW: EVICTION SAFETY INIT ---
+            // --- EVICTION SAFETY INIT ---
             // Explicitly clear the country memory before the IE walk so
             // the new AP doesn't inherit a stale code from the previous occupant.
             liveApData[ap_index].country[0] = '\0';
@@ -292,7 +291,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               else if (tag_num == 3 && tag_len == 1) {
                 true_channel = payload[offset + 2];
               }
-              // --- NEW: TAG 7 COUNTRY CODE PARSER ---
+              // --- TAG 7 COUNTRY CODE PARSER ---
               else if (tag_num == 7 && tag_len >= 2) {
                 uint8_t c0 = payload[offset + 2];
                 uint8_t c1 = payload[offset + 3];
@@ -326,7 +325,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             liveApData[ap_index].rssi = pkt->rx_ctrl.rssi;
             liveApData[ap_index].rssi_min = pkt->rx_ctrl.rssi;
             liveApData[ap_index].rssi_max = pkt->rx_ctrl.rssi;
-            liveApData[ap_index].channel = true_channel; // <--- INJECT THE TRUE CHANNEL
+            liveApData[ap_index].channel = true_channel;
 
             // ssid is char ssid[26] — trimmed from 28 to accommodate rssi_min/rssi_max
             strncpy((char*)liveApData[ap_index].ssid, extracted_ssid, sizeof(liveApData[ap_index].ssid));
@@ -335,7 +334,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             liveApData[ap_index].ssid[sizeof(liveApData[ap_index].ssid) - 1] = '\0';
 
             // ==========================================
-            // NEW: O(N) CLONE DETECTION ON DISCOVERY
+            // O(N) CLONE DETECTION ON DISCOVERY
             // ==========================================
             liveApData[ap_index].has_clone = false;
 
@@ -671,7 +670,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           bool to_ds = (payload[1] & 0x01) != 0;
           bool from_ds = (payload[1] & 0x02) != 0;
 
-          // FIX 1: Strict check for +HTC. The Order bit (0x80) only means +HTC
+          // Strict check for +HTC: the Order bit (0x80) only means +HTC
           // if it is a QoS Data frame! Otherwise, it just means "Strictly Ordered".
           bool has_ht_ctrl = is_qos && ((payload[1] & 0x80) != 0);
 
@@ -714,7 +713,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               uint8_t captured_dst_ip[16] = {0};
 
               // =======================================================
-              // FIX 2: THE A-MSDU BYPASS
+              // THE A-MSDU BYPASS
               // =======================================================
               bool is_amsdu = false;
               if (is_qos) {
@@ -731,11 +730,11 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               // 1. Skip LLC/SNAP Header (8 bytes) if present AND not an A-MSDU.
               if (!is_amsdu && body_len > 8 && frame_body[0] == 0xAA && frame_body[1] == 0xAA) {
                   bool is_apple = (frame_body[3] == 0x00 && frame_body[4] == 0x17 && frame_body[5] == 0xF2);
-                  ether_type = (frame_body[6] << 8) | frame_body[7]; // <--- GRAB ETHERTYPE HERE
+                  ether_type = (frame_body[6] << 8) | frame_body[7];
                   frame_body += 8;
                   body_len -= 8;
 
-                  // --- NEW: APPLE AWDL SHIM BYPASS ---
+                  // --- APPLE AWDL SHIM BYPASS ---
                   // Apple AWDL injects a 6-byte shim before the real IPv6 header (86 DD).
                   // --- UPGRADED: APPLE AWDL SHIM BYPASS (SLIDING WINDOW) ---
                   if (is_apple && body_len > 8) {
@@ -751,7 +750,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       if (shim_len != -1) {
                           ether_type = 0x86DD; // Force the EtherType to IPv6
 
-                          // THE FIX: Step OVER the 86 DD bytes (+2) to reach the 0x60 IPv6 header!
+                          // Step OVER the 86 DD bytes (+2) to reach the 0x60 IPv6 header.
                           frame_body += (shim_len + 2);
                           body_len -= (shim_len + 2);
                       }
@@ -771,7 +770,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               // 2. Check for IPv4 (First nibble is 4)
               if (!is_amsdu && body_len > 20 && (frame_body[0] & 0xF0) == 0x40) {
                   captured_ip_version = 4;
-                  // --- NEW: Read Logical IP Length to strip Wi-Fi FCS/Padding ---
+                  // --- Read Logical IP Length to strip Wi-Fi FCS/Padding ---
                   uint16_t ip_total_len = (frame_body[2] << 8) | frame_body[3];
                   // Safety check: ensure IP length isn't larger than our physical capture
                   if (ip_total_len < body_len) {
@@ -800,7 +799,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       uint8_t* tcp_header = frame_body + ip_header_len;
                       captured_src_port = (tcp_header[0] << 8) | tcp_header[1];
                       captured_dst_port = (tcp_header[2] << 8) | tcp_header[3];
-                      tcp_flags = tcp_header[13]; // <--- GRAB TCP FLAGS HERE
+                      tcp_flags = tcp_header[13];
 
                       uint8_t tcp_header_len = ((tcp_header[12] & 0xF0) >> 4) * 4;
                       if (body_len > (ip_header_len + tcp_header_len)) {
@@ -838,7 +837,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   uint8_t ip_header_len = 40; // Fixed size for base IPv6 header
 
                   // ==========================================
-                  // NEW: EXTENSION HEADER HOPPER (Hop-by-Hop)
+                  // EXTENSION HEADER HOPPER (Hop-by-Hop)
                   // Apple injects Hop-by-Hop (0) into mDNS and ICMPv6 multicasts.
                   // ==========================================
                   if (next_header == 0 && body_len > ip_header_len + 8) {
@@ -868,7 +867,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       uint8_t* tcp_header = frame_body + ip_header_len;
                       captured_src_port = (tcp_header[0] << 8) | tcp_header[1];
                       captured_dst_port = (tcp_header[2] << 8) | tcp_header[3];
-                      tcp_flags = tcp_header[13]; // <--- GRAB TCP FLAGS HERE
+                      tcp_flags = tcp_header[13];
 
                       uint8_t tcp_header_len = ((tcp_header[12] & 0xF0) >> 4) * 4;
                       if (body_len > (ip_header_len + tcp_header_len)) {
@@ -876,7 +875,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                           body_len -= (ip_header_len + tcp_header_len);
                       }
                   } else if (next_header == 58 && body_len > ip_header_len) {
-                      // --- NEW: ICMPv6 (58) ---
+                      // --- ICMPv6 (58) ---
                       captured_protocol = 58; // ICMPv6
                       frame_body += ip_header_len;
                       body_len -= ip_header_len;
@@ -1098,7 +1097,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                           ui_dropped_packets++;
                           live_dump_dropped++;
                       } else {
-                          leak_funnel_shipped++; // <-- IT BELONGS EXACTLY HERE
+                          leak_funnel_shipped++; // shipped = successful liveDumpQueue enqueue (y counterpart of z above)
                           pcap_upstream_total++;  // cumulative: successful liveDumpQueue enqueue
                       }
                   }
@@ -1283,7 +1282,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       liveData[i].sum_bytes += len;
       liveData[i].sum_sq_bytes += ((uint64_t)len * len);
 
-      // THE FIX 1: Pure Window Stretching
+      // Pure Window Stretching
       // Track the absolute min/max for this 2-second window without ever
       // deleting history. Only updates when the target is transmitting.
       if (is_tx) {
@@ -1323,7 +1322,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     liveData[liveMacCount].first_seen = now;
     liveData[liveMacCount].last_seen = now;
 
-    // THE FIX 2: Dynamic Initializer
+    // Dynamic Initializer
     // Seed the bounds directly to the first packet if it's a physical transmission.
     // Otherwise, use the safe defaults so they stretch correctly later.
     if (is_tx) {
@@ -1384,7 +1383,7 @@ void processLiveDumpQueue() {
     static char temp_text[MAX_LEAK_STR_LEN];
     static char eapol_text[MAX_LEAK_STR_LEN];
 
-    // FIXED: Short-circuit evaluation order. Check count BEFORE pulling from the queue.
+    // Check count BEFORE pulling from the queue (short-circuit order matters).
     while (packets_processed < 5 &&
        xQueueReceive(liveDumpQueue, &live_evt, 0) == pdTRUE) {
         packets_processed++;
@@ -1444,7 +1443,7 @@ void processLiveDumpQueue() {
                 live_evt.meta.is_high_value = true;
             }
         }
-        // FIXED: The entire chain is now guarded so the SSDP bypass isn't overwritten
+        // The entire chain is guarded so the SSDP bypass isn't overwritten
         if (!custom_extracted) {
             if (live_evt.meta.ether_type == 0x0806) {
                 custom_extracted = parse_arp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
@@ -1827,7 +1826,7 @@ else if (len == 148 &&
             else if (live_evt.meta.dst_port == 1883 || live_evt.meta.src_port == 1883) {
                 snprintf(temp_text, MAX_LEAK_STR_LEN, "MQTT (IoT Telemetry/PubSub)");
                 custom_extracted = true;
-                // FIXED: Removed the automatic high_value elevation here so generic telemetry stays normal
+                // No automatic high_value elevation here so generic telemetry stays normal
             }
             else if (live_evt.meta.dst_port == 5683 || live_evt.meta.src_port == 5683) {
     snprintf(temp_text, MAX_LEAK_STR_LEN,
@@ -1973,7 +1972,7 @@ void resetMonitorState() {
   sessionChannelCount = 0;
 
   // Session reset: the waterfall's cumulative counters start over here too.
-  // They are deliberately NOT touched by the 3 s DIAG reset block.
+  // Other zero sites: switchRadioMode() and the MENU-EXIT path; the DIAG block only derives window deltas.
   pcap_upstream_total  = 0;
   pcap_cooldown_total  = 0;
   pcap_displayed_total = 0;
