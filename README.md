@@ -26,9 +26,16 @@ _pending — capture → filter → 30-second cooldown → queue → parse → d
 
 ## Capture counters and display views
 
-The header at the top of the real-time screen shows three cumulative numbers, for
-example `100/239/251`. They form a funnel — the intended relationship is
-x ≤ y ≤ z — and all three reset only on a session/mode reset, not per interval:
+The header at the top of the real-time screen shows three numbers, for example
+`12/239/251`. They form a funnel — the intended relationship is x ≤ y ≤ z — and
+each is the delta over the last ~3-second telemetry window, so the values give
+an immediate indication of current RF activity rather than lifetime totals.
+
+Under the hood, `pcap_displayed_total`, `pcap_upstream_total`, and
+`pcap_cooldown_total` are cumulative accounting counters for the current
+telemetry session and preserve the x ≤ y ≤ z invariant; the header renders the
+per-window change in each. Session and mode resets re-baseline the window
+snapshots safely. The semantics of each stage:
 
 - **x — leaks logged/displayed.** Distinct leak results that made it through
   processing and were written to the serial log (a unique source-MAC + text

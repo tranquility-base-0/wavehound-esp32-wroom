@@ -352,6 +352,14 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
             esp_wifi_set_promiscuous(true); 
         }
         
+        // MENU → EXIT starts a fresh x/y/z telemetry session: zero the three
+        // cumulative waterfall counters without resetMonitorState()'s union
+        // wipes (this path deliberately resumes capture/history state).
+        // Before the gate reopens so post-resume increments land on fresh counts.
+        pcap_displayed_total = 0;
+        pcap_upstream_total  = 0;
+        pcap_cooldown_total  = 0;
+
         // Restore the software capture gate (the MENU path raised it and the
         // EXIT path used to leave it set, deadlocking capture for up to the
         // next runProbeCorrelationEngine cycle).

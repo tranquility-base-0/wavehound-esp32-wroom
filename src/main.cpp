@@ -306,7 +306,27 @@ if (millis() - last_debug_print > 3000) {
     if (currentState == SCREEN_CHART &&
         currentRadioMode == RADIO_PCAP) {
 
-        drawTelemetryHeader(pcap_displayed_total, pcap_upstream_total, pcap_cooldown_total);
+        // Waterfall header shows the ~3 s WINDOW deltas of the cumulative
+        // funnel counters (96eebe9 accounting stays cumulative for the
+        // x<=y<=z invariant). Unsigned compare guards against the underflow
+        // artifact when a session/mode reset rewound the cumulative counters
+        // below the previous snapshot: clamp to the fresh (post-reset) value.
+        static uint32_t prev_displayed = 0;
+        static uint32_t prev_upstream  = 0;
+        static uint32_t prev_cooldown  = 0;
+
+        uint32_t win_x = (pcap_displayed_total >= prev_displayed)
+                             ? pcap_displayed_total - prev_displayed : pcap_displayed_total;
+        uint32_t win_y = (pcap_upstream_total >= prev_upstream)
+                             ? pcap_upstream_total - prev_upstream : pcap_upstream_total;
+        uint32_t win_z = (pcap_cooldown_total >= prev_cooldown)
+                             ? pcap_cooldown_total - prev_cooldown : pcap_cooldown_total;
+
+        prev_displayed = pcap_displayed_total;
+        prev_upstream  = pcap_upstream_total;
+        prev_cooldown  = pcap_cooldown_total;
+
+        drawTelemetryHeader(win_x, win_y, win_z);
     }
 
     last_debug_print = millis();
