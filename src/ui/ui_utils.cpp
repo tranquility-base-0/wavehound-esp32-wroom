@@ -8,9 +8,9 @@ void getAgeString(uint32_t timestamp, char* buf, size_t len) {
         snprintf(buf, len, "00h00m");
         return;
     }
-    
+
     // Using subtraction handles the millis() 50-day rollover safely
-    uint32_t elapsed = millis() - timestamp; 
+    uint32_t elapsed = millis() - timestamp;
     uint32_t mins = elapsed / 60000;
     uint32_t hours = mins / 60;
     mins = mins % 60;
@@ -41,9 +41,9 @@ void cleanOsintString(char* s) {
     char* pos;
     while ((pos = strstr(s, ":  ")) != nullptr) {
         // Keep the ':', shift the rest of the string left by 2 bytes
-        memmove(pos + 1, pos + 3, strlen(pos + 3) + 1); 
+        memmove(pos + 1, pos + 3, strlen(pos + 3) + 1);
     }
-    
+
     // 3. Crush single spaces after colons
     while ((pos = strstr(s, ": ")) != nullptr) {
         // Keep the ':', shift the rest of the string left by 1 byte

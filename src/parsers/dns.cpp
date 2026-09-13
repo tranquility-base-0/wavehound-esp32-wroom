@@ -9,10 +9,10 @@
 #include "dns.h"
 
 bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char* out_text, size_t max_len) {
-    if (length < 12) return false; 
+    if (length < 12) return false;
 
     bool is_response = (payload[2] & 0x80) != 0;
-    
+
     uint16_t qdcount = (payload[4] << 8) | payload[5];
     uint16_t ancount = (payload[6] << 8) | payload[7];
     uint16_t nscount = (payload[8] << 8) | payload[9];
@@ -48,7 +48,6 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
     return result_offset;
 };
 
-
     int offset = 12;
 
     // 1. Process Questions
@@ -68,23 +67,23 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
     int total_answers = ancount + nscount + arcount;
     for (int i = 0; i < total_answers && offset < length; i++) {
         offset = append_dns_name(offset);  // CHANGED
-        
+
         if (offset + 10 <= length) {
             uint16_t rr_type = (payload[offset] << 8) | payload[offset+1];
             uint16_t rdlength = (payload[offset+8] << 8) | payload[offset+9];
-            
+
             offset += 10;
-            
+
             if (offset + rdlength > length) break;
-            
+
             if (rr_type == 16) { // TXT — unchanged
                 int txt_off = offset;
                 int txt_end = offset + rdlength;
-                
+
                 while (txt_off < txt_end) {
                     uint8_t txt_len = payload[txt_off];
                     if (txt_off + 1 + txt_len > txt_end) break;
-                    
+
                     bool is_printable = true;
                     for (int j = 0; j < txt_len; j++) {
                         uint8_t c = payload[txt_off + 1 + j];
@@ -93,11 +92,11 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                             break;
                         }
                     }
-                    
+
                     if (is_printable && txt_len > 0) {
                         if (d_idx + txt_len + 3 < sizeof(domains)) {
                             if (valid_labels > 0) {
-                                domains[d_idx++] = ','; 
+                                domains[d_idx++] = ',';
                                 domains[d_idx++] = ' ';
                             }
                             memcpy(&domains[d_idx], &payload[txt_off+1], txt_len);
@@ -105,18 +104,18 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                             valid_labels++;
                         }
                     }
-                    txt_off += 1 + txt_len; 
+                    txt_off += 1 + txt_len;
                 }
             }
             else if (rr_type == 1 && rdlength == 4) { // A — unchanged
                 char ip_str[32];
-                snprintf(ip_str, sizeof(ip_str), "[IP: %d.%d.%d.%d]", 
+                snprintf(ip_str, sizeof(ip_str), "[IP: %d.%d.%d.%d]",
                          payload[offset], payload[offset+1], payload[offset+2], payload[offset+3]);
                 int ip_len = strlen(ip_str);
-                
+
                 if (d_idx + ip_len + 3 < sizeof(domains)) {
                     if (valid_labels > 0) {
-                        domains[d_idx++] = ','; 
+                        domains[d_idx++] = ',';
                         domains[d_idx++] = ' ';
                     }
                     memcpy(&domains[d_idx], ip_str, ip_len);
@@ -151,10 +150,10 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                 char port_str[32];
                 snprintf(port_str, sizeof(port_str), "[Port: %u]", srv_port);
                 int p_len = strlen(port_str);
-                
+
                 if (d_idx + p_len + 3 < sizeof(domains)) {
                     if (valid_labels > 0) {
-                        domains[d_idx++] = ','; 
+                        domains[d_idx++] = ',';
                         domains[d_idx++] = ' ';
                     }
                     memcpy(&domains[d_idx], port_str, p_len);
@@ -164,7 +163,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                 append_dns_name(offset + 6);  // CHANGED
             }
 
-            offset += rdlength; 
+            offset += rdlength;
         } else {
             break;
         }
@@ -185,7 +184,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
 
         for (int i = 12; i < length; i++) {
             char c = payload[i];
-            if (c >= 32 && c <= 126) { 
+            if (c >= 32 && c <= 126) {
                 if (cur_l == 0) cur_s = i;
                 if (c == '=') has_equals = true;
                 cur_l++;
@@ -200,8 +199,8 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
                 has_equals = false;
             }
         }
-        
-        if (cur_l > 0) { 
+
+        if (cur_l > 0) {
             int cur_score = cur_l + (has_equals ? 15 : 0);
             if (cur_score > best_score) {
                 best_score = cur_score; best_l = cur_l; best_s = cur_s;
@@ -221,7 +220,7 @@ bool parse_dns_mdns(const uint8_t* payload, uint16_t length, bool is_mdns, char*
 bool parse_llmnr(const uint8_t* payload, uint16_t length, char* out_text, size_t max_len) {
     // Defensive entry guard
     if (length < 12 || payload == nullptr || out_text == nullptr || max_len < 30) {
-        return false; 
+        return false;
     }
 
     uint16_t flags = (payload[2] << 8) | payload[3];
@@ -233,24 +232,24 @@ bool parse_llmnr(const uint8_t* payload, uint16_t length, char* out_text, size_t
         char domain[80] = {0};
         int d_idx = 0;
         int i = 12; // Start immediately after header
-        
+
         // SAFE SLIDING WINDOW
         while (i < length && payload[i] != 0x00) {
             uint8_t label_len = payload[i];
-            
+
             // Abort on compression pointer (0xC0) to prevent infinite loops
             if ((label_len & 0xC0) == 0xC0) {
-                break; 
+                break;
             }
 
             // 1. Verify label doesn't exceed the packet payload
             if (label_len > 0 && label_len <= 63 && (i + 1 + label_len) <= length) {
-                
+
                 // 2. Verify label won't overflow our local domain buffer!
                 if (d_idx + label_len + 1 >= sizeof(domain)) {
                     break;
                 }
-                
+
                 if (d_idx > 0) domain[d_idx++] = '.';
                 memcpy(&domain[d_idx], &payload[i + 1], label_len);
                 d_idx += label_len;
@@ -264,10 +263,10 @@ bool parse_llmnr(const uint8_t* payload, uint16_t length, char* out_text, size_t
         if (d_idx > 0) {
             const char* type_str = is_response ? "Reply" : "Query";
             snprintf(out_text, max_len, "LLMNR [%s] Tgt: %s", type_str, domain);
-            
+
             // Retained your original formatting call
             format_reverse_lookups(out_text, max_len);
-            
+
             return true;
         }
     }

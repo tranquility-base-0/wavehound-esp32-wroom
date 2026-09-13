@@ -11,11 +11,10 @@ const int APS_PER_PAGE = 6; // Number of APs that fit safely between the header 
 BeaconEntry beaconDict[MAX_BEACON_DICT];
 uint8_t beaconDictCount = 0;
 
-
 void ingestBeacon(uint8_t* bssid, const char* ssid, int8_t rssi) {
     // Skip hidden networks — no useful cross-reference value
     if (ssid == nullptr || strlen(ssid) == 0) return;
-    
+
     // Search for existing entry
     for (int i = 0; i < beaconDictCount; i++) {
         if (memcmp(beaconDict[i].bssid, bssid, 6) == 0) {
@@ -25,7 +24,7 @@ void ingestBeacon(uint8_t* bssid, const char* ssid, int8_t rssi) {
             return;
         }
     }
-    
+
     // New entry
     if (beaconDictCount < MAX_BEACON_DICT) {
         memcpy(beaconDict[beaconDictCount].bssid, bssid, 6);
@@ -41,13 +40,13 @@ void ingestBeacon(uint8_t* bssid, const char* ssid, int8_t rssi) {
 }
 double getSortMetric(ApRecord& record, SortMode mode) {
     switch(mode) {
-        case SORT_TOTAL: 
+        case SORT_TOTAL:
             return (double)(record.tx_bytes + record.rx_bytes);
-        case SORT_TX:    
+        case SORT_TX:
             return (double)record.tx_bytes;
-        case SORT_RX:    
+        case SORT_RX:
             return (double)record.rx_bytes;
-        case SORT_AVG:   
+        case SORT_AVG:
             return (record.packets > 0) ? ((double)record.sum_bytes / record.packets) : 0.0;
         case SORT_CV: {
             if (record.packets == 0) return 0.0;
@@ -59,9 +58,9 @@ double getSortMetric(ApRecord& record, SortMode mode) {
             return (sqrt(variance) / mean) * 100.0;
         }
         case SORT_DIST:
-            return (double)record.smoothedDistance; 
+            return (double)record.smoothedDistance;
         case SORT_AGE:
-            return (double)record.last_seen; 
+            return (double)record.last_seen;
     }
     return 0.0;
 }
@@ -77,7 +76,7 @@ void processApData() {
             sortApCount++;
         }
     }
-    
+
     for (int i = 0; i < liveApCount; i++) {
         bool found = false;
         float rawDistance = calculateRfDistance(liveApData[i].rssi, 0, RADIO_WIFI_24GHZ);
@@ -89,7 +88,7 @@ void processApData() {
                 sessionApData[j].rx_bytes += liveApData[i].rx_bytes;
                 sessionApData[j].sum_bytes += liveApData[i].sum_bytes;
                 sessionApData[j].sum_sq_bytes += liveApData[i].sum_sq_bytes;
-                
+
                 sessionApData[j].last_seen = liveApData[i].last_seen;
                 sessionApData[j].rssi = liveApData[i].rssi;
                 if (liveApData[i].rssi_min < sessionApData[j].rssi_min || sessionApData[j].rssi_min == 0) {
@@ -104,15 +103,15 @@ void processApData() {
                     sessionApData[j].country[1] = liveApData[i].country[1];
                     sessionApData[j].country[2] = '\0';
                 }
-                
+
                 if (liveApData[i].max_rate > sessionApData[j].max_rate) {
                     sessionApData[j].max_rate = liveApData[i].max_rate;
                 }
-                
+
                 if (rawDistance > 0) {
                     sessionApData[j].smoothedDistance = (0.2 * rawDistance) + (0.8 * sessionApData[j].smoothedDistance);
                 }
-                
+
                 if (strcmp(sessionApData[j].ssid, "<UNKNOWN>") == 0 && strcmp((char*)liveApData[i].ssid, "<UNKNOWN>") != 0) {
                     strlcpy((char*)sessionApData[j].ssid, (char*)liveApData[i].ssid, sizeof(sessionApData[j].ssid));
                 }
@@ -120,7 +119,7 @@ void processApData() {
                 found = true; break;
             }
         }
-        
+
         if (!found) {
             int targetIndex = -1;
 
@@ -155,7 +154,7 @@ void processApData() {
             }
         }
     }
-    
+
     // Clear the traffic counters, but PRESERVE THE DICTIONARY!
     for (int i = 0; i < liveApCount; i++) {
         liveApData[i].packets = 0;
@@ -164,13 +163,13 @@ void processApData() {
         liveApData[i].sum_bytes = 0;
         liveApData[i].sum_sq_bytes = 0;
     }
-    
+
     // --- FAST INSERTION SORT: AP SNAPSHOT ---
     for (int i = 1; i < sortApCount; i++) {
         ApRecord key = sortApData[i];
         double key_val = getSortMetric(key, currentSortMode);
         int j = i - 1;
-        
+
         if (sort_descending) {
             while (j >= 0 && getSortMetric(sortApData[j], currentSortMode) < key_val) {
                 sortApData[j + 1] = sortApData[j];
@@ -204,8 +203,8 @@ void processApData() {
         }
         sessionApData[j + 1] = key;
     }
-    
-    sortOtherBytes = 0; 
+
+    sortOtherBytes = 0;
     for(int i = 8; i < sortApCount; i++) {
         sortOtherBytes += (sortApData[i].tx_bytes + sortApData[i].rx_bytes);
     }

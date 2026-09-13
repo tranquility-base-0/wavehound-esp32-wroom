@@ -83,10 +83,10 @@ bool parse_icmpv4(const uint8_t* payload, uint16_t length, char* out_text, size_
     uint8_t code = payload[1];
 
     switch (type) {
-        case 0:  
-            snprintf(out_text, max_len, "ICMPv4: Echo Reply"); 
+        case 0:
+            snprintf(out_text, max_len, "ICMPv4: Echo Reply");
             return true;
-        case 3: 
+        case 3:
             // Destination Unreachable has highly specific codes
             switch(code) {
                 case 0: snprintf(out_text, max_len, "ICMPv4: Dest Unreachable (Network)"); return true;
@@ -99,11 +99,11 @@ bool parse_icmpv4(const uint8_t* payload, uint16_t length, char* out_text, size_
         case 4:
             snprintf(out_text, max_len, "ICMPv4: Source Quench");
             return true;
-        case 8:  
-            snprintf(out_text, max_len, "ICMPv4: Echo Request (Ping)"); 
+        case 8:
+            snprintf(out_text, max_len, "ICMPv4: Echo Request (Ping)");
             return true;
-        case 11: 
-            snprintf(out_text, max_len, "ICMPv4: Time Exceeded (Traceroute)"); 
+        case 11:
+            snprintf(out_text, max_len, "ICMPv4: Time Exceeded (Traceroute)");
             return true;
         case 12:
             snprintf(out_text, max_len, "ICMPv4: Parameter Problem");
@@ -114,8 +114,8 @@ bool parse_icmpv4(const uint8_t* payload, uint16_t length, char* out_text, size_
         case 14:
             snprintf(out_text, max_len, "ICMPv4: Timestamp Reply (Recon)");
             return true;
-        default: 
-            snprintf(out_text, max_len, "ICMPv4: Type %u, Code %u", type, code); 
+        default:
+            snprintf(out_text, max_len, "ICMPv4: Type %u, Code %u", type, code);
             return true;
     }
 }
@@ -287,7 +287,6 @@ bool parse_icmpv6(const uint8_t* payload,
             break;
     }
 
-
     // -----------------------------------------------------
     // BASIC HEADER-ONLY CASES
     // -----------------------------------------------------
@@ -304,7 +303,6 @@ bool parse_icmpv6(const uint8_t* payload,
         return true;
     }
 
-
     // -----------------------------------------------------
     // ERROR MESSAGES
     // -----------------------------------------------------
@@ -319,7 +317,6 @@ bool parse_icmpv6(const uint8_t* payload,
 
         return true;
     }
-
 
     // -----------------------------------------------------
     // ECHO REQUEST / REPLY
@@ -354,7 +351,6 @@ bool parse_icmpv6(const uint8_t* payload,
         return true;
     }
 
-
     // -----------------------------------------------------
     // ROUTER SOLICITATION
     //
@@ -377,7 +373,6 @@ bool parse_icmpv6(const uint8_t* payload,
 
         return true;
     }
-
 
     // -----------------------------------------------------
     // ROUTER ADVERTISEMENT
@@ -628,7 +623,6 @@ bool parse_icmpv6(const uint8_t* payload,
         return true;
     }
 
-
     // -----------------------------------------------------
     // NEIGHBOR SOLICITATION
     //
@@ -662,7 +656,6 @@ bool parse_icmpv6(const uint8_t* payload,
 
         return true;
     }
-
 
     // -----------------------------------------------------
     // NEIGHBOR ADVERTISEMENT
@@ -716,7 +709,6 @@ bool parse_icmpv6(const uint8_t* payload,
         return true;
     }
 
-
     // -----------------------------------------------------
     // MLD
     // -----------------------------------------------------
@@ -733,7 +725,6 @@ bool parse_icmpv6(const uint8_t* payload,
 
         return true;
     }
-
 
     // -----------------------------------------------------
     // FALLBACK
@@ -784,7 +775,7 @@ bool parse_eapol(const uint8_t* payload, uint16_t length, char* out_text, size_t
             bool secure     = (key_info & 0x0200) != 0;
 
             const char* msg_type = "Unknown";
-            int msg_num = 0; 
+            int msg_num = 0;
 
             if (pairwise) {
                 if (ack && !mic) { msg_type = "M1 (AP->STA)"; msg_num = 1; }
@@ -799,9 +790,9 @@ bool parse_eapol(const uint8_t* payload, uint16_t length, char* out_text, size_t
             bool have_nonce = (length >= 49); // offset 17 + 32 bytes
             bool have_mic   = (length >= 97); // offset 81 + 16 bytes
 
-            if (msg_num > 0 && have_nonce) { 
-                char nonce_hex[65] = {0}; 
-                char mic_hex[33] = {0};   
+            if (msg_num > 0 && have_nonce) {
+                char nonce_hex[65] = {0};
+                char mic_hex[33] = {0};
 
                 const uint8_t* p_nonce = &payload[17];
                 for (int i = 0; i < 32; i++) {

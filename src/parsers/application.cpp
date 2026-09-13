@@ -10,25 +10,25 @@
 
 bool parse_dhcp_v4(const uint8_t* payload, uint16_t length, char* out_text, size_t max_len) {
     if (!payload || !out_text || max_len == 0 || length < 240) return false;
-    
-    if (payload[236] == 0x63 && payload[237] == 0x82 && 
+
+    if (payload[236] == 0x63 && payload[237] == 0x82 &&
         payload[238] == 0x53 && payload[239] == 0x63) {
-        
+
         int offset = 240;
         char msg_type_str[16] = "UNK";
-        
+
         char best_text[128] = {0};
         char dns_str[96] = {0};
-        int current_priority = 99; 
+        int current_priority = 99;
 
         while (offset < length && payload[offset] != 255) {
             uint8_t opt_type = payload[offset];
-            if (opt_type == 0) { offset++; continue; } 
-            
+            if (opt_type == 0) { offset++; continue; }
+
             if (offset + 1 >= length) break;
             uint8_t opt_len = payload[offset + 1];
-            if (offset + 2 + opt_len > length) break; 
-            
+            if (offset + 2 + opt_len > length) break;
+
             int opt_data = offset + 2;
             int this_priority = 99;
             char temp_buf[128] = {0};
@@ -57,7 +57,7 @@ bool parse_dhcp_v4(const uint8_t* payload, uint16_t length, char* out_text, size
                                         payload[opt_data + i + 2], payload[opt_data + i + 3]);
                 }
             }
-            else if (opt_type == 81 && opt_len > 3) { 
+            else if (opt_type == 81 && opt_len > 3) {
                 char fqdn_buf[64] = {0};
                 int res = decode_dns_name(payload, opt_data + opt_len, opt_data + 3, fqdn_buf, sizeof(fqdn_buf));
                 if (res >= 0 && fqdn_buf[0] != '\0') {
@@ -65,17 +65,17 @@ bool parse_dhcp_v4(const uint8_t* payload, uint16_t length, char* out_text, size
                     snprintf(temp_buf, sizeof(temp_buf), "FQDN: %s", fqdn_buf);
                 }
             }
-            else if (opt_type == 12 && opt_len > 0) { 
-                this_priority = 2; 
+            else if (opt_type == 12 && opt_len > 0) {
+                this_priority = 2;
                 snprintf(temp_buf, sizeof(temp_buf), "Host: ");
                 copy_printable_ascii(&payload[opt_data], opt_len, temp_buf + 6, sizeof(temp_buf) - 6);
             }
-            else if (opt_type == 60 && opt_len > 0) { 
-                this_priority = 3; 
+            else if (opt_type == 60 && opt_len > 0) {
+                this_priority = 3;
                 snprintf(temp_buf, sizeof(temp_buf), "Vendor: ");
                 copy_printable_ascii(&payload[opt_data], opt_len, temp_buf + 8, sizeof(temp_buf) - 8);
             }
-            else if (opt_type == 61 && opt_len > 1) { 
+            else if (opt_type == 61 && opt_len > 1) {
                 this_priority = 4;
                 snprintf(temp_buf, sizeof(temp_buf), "ClientID: ");
                 int out_idx = 10;
@@ -83,16 +83,16 @@ bool parse_dhcp_v4(const uint8_t* payload, uint16_t length, char* out_text, size
                     out_idx += snprintf(temp_buf + out_idx, sizeof(temp_buf) - out_idx, "%02X", payload[opt_data + i]);
                 }
             }
-            else if (opt_type == 55 && opt_len > 0) { 
+            else if (opt_type == 55 && opt_len > 0) {
                 this_priority = 5;
                 snprintf(temp_buf, sizeof(temp_buf), "PRL: ");
                 int out_idx = 5;
                 for (int i = 0; i < opt_len && out_idx < (int)sizeof(temp_buf) - 4; i++) {
                     out_idx += snprintf(temp_buf + out_idx, sizeof(temp_buf) - out_idx, "%d,", payload[opt_data + i]);
                 }
-                if (out_idx > 5) temp_buf[out_idx - 1] = '\0'; 
+                if (out_idx > 5) temp_buf[out_idx - 1] = '\0';
             }
-            
+
             if (this_priority < current_priority && temp_buf[0] != '\0') {
                 current_priority = this_priority;
                 strlcpy(best_text, temp_buf, sizeof(best_text));
@@ -114,11 +114,11 @@ bool parse_dhcp_v4(const uint8_t* payload, uint16_t length, char* out_text, size
 }
 
 bool parse_dhcp_v6(const uint8_t* payload, uint16_t length, char* out_text, size_t max_len) {
-    if (!payload || !out_text || max_len == 0 || length < 4) return false; 
-    
+    if (!payload || !out_text || max_len == 0 || length < 4) return false;
+
     uint8_t msg_type = payload[0];
     char msg_type_str[16] = "UNK";
-    
+
     switch (msg_type) {
         case 1:  strlcpy(msg_type_str, "SOLICIT", sizeof(msg_type_str)); break;
         case 2:  strlcpy(msg_type_str, "ADVERT", sizeof(msg_type_str)); break;
@@ -151,14 +151,14 @@ bool parse_dhcp_v6(const uint8_t* payload, uint16_t length, char* out_text, size
         uint16_t opt_code = (payload[offset] << 8) | payload[offset + 1];
         uint16_t opt_len = (payload[offset + 2] << 8) | payload[offset + 3];
         offset += 4;
-        
-        if (offset + opt_len > length) break; 
-        
+
+        if (offset + opt_len > length) break;
+
         int opt_data = offset;
         int this_priority = 99;
         char temp_buf[128] = {0};
 
-        if (opt_code == 39 && opt_len > 1) { 
+        if (opt_code == 39 && opt_len > 1) {
             char fqdn_buf[64] = {0};
             int res = decode_dns_name(payload, opt_data + opt_len, opt_data + 1, fqdn_buf, sizeof(fqdn_buf));
             if (res >= 0 && fqdn_buf[0] != '\0') {
@@ -167,22 +167,22 @@ bool parse_dhcp_v6(const uint8_t* payload, uint16_t length, char* out_text, size
             }
         }
         else if (opt_code == 16 && opt_len > 4) { // Option 16: Structured Vendor Class
-            this_priority = 2; 
+            this_priority = 2;
             snprintf(temp_buf, sizeof(temp_buf), "Vendor: ");
             int out_idx = 8;
             int v_off = 4; // Skip 4-byte enterprise ID
-            
+
             while (v_off + 2 <= opt_len) {
                 uint16_t v_len = (payload[opt_data + v_off] << 8) | payload[opt_data + v_off + 1];
                 v_off += 2;
                 if (v_off + v_len > opt_len) break; // Truncated class data
-                
+
                 if (out_idx > 8 && out_idx < (int)sizeof(temp_buf) - 2) temp_buf[out_idx++] = ' ';
                 out_idx += copy_printable_ascii(&payload[opt_data + v_off], v_len, temp_buf + out_idx, sizeof(temp_buf) - out_idx);
                 v_off += v_len;
             }
         }
-        else if (opt_code == 1 && opt_len > 0) { 
+        else if (opt_code == 1 && opt_len > 0) {
             this_priority = 3;
             snprintf(temp_buf, sizeof(temp_buf), "DUID: ");
             int out_idx = 6;
@@ -196,7 +196,7 @@ bool parse_dhcp_v6(const uint8_t* payload, uint16_t length, char* out_text, size
             for (int i = 0; i < opt_len; i += 16) {
                 if (dns_idx > 5) dns_str[dns_idx++] = ',';
                 if (dns_idx > (int)sizeof(dns_str) - 40) break; // Capacity safety
-                
+
                 char ip_buf[40];
                 format_ipv6_addr(&payload[opt_data + i], ip_buf, sizeof(ip_buf));
                 dns_idx += snprintf(dns_str + dns_idx, sizeof(dns_str) - dns_idx, "%s", ip_buf);
@@ -207,7 +207,7 @@ bool parse_dhcp_v6(const uint8_t* payload, uint16_t length, char* out_text, size
             current_priority = this_priority;
             strlcpy(best_text, temp_buf, sizeof(best_text));
         }
-        offset += opt_len; 
+        offset += opt_len;
     }
 
     int written = snprintf(out_text, max_len, "DHCPv6 [%s]", msg_type_str);
@@ -232,7 +232,7 @@ bool parse_ipp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
         va_start(args, fmt);
         int written = vsnprintf(out_text + pos, max_len - pos, fmt, args);
         va_end(args);
-        
+
         if (written < 0 || (size_t)written >= max_len - pos) {
             out_text[max_len - 1] = '\0';
             return false;
@@ -249,17 +249,17 @@ bool parse_ipp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
     // 2. IPP Header Validation (Version + Opcode Plausibility)
     uint8_t major_version = payload[0];
     uint8_t minor_version = payload[1];
-    
+
     if ((major_version != 1 && major_version != 2) || minor_version > 2) {
         return false;
     }
-    
+
     // Basic Opcode/Status check: valid codes are never 0x0000 or 0xFFFF
     uint16_t op_status = (payload[2] << 8) | payload[3];
     if (op_status == 0x0000 || op_status == 0xFFFF) return false;
 
     uint16_t offset = 8; // Skip Version (2), Operation/Status (2), Request ID (4)
-    
+
     char user[32] = {0};
     char doc[64]  = {0};
     bool found_user = false;
@@ -269,30 +269,30 @@ bool parse_ipp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
     // 3. Strict TLV Walk
     while (offset < length) {
         uint8_t tag = payload[offset++];
-        
+
         // End-of-attributes
-        if (tag == 0x03) break; 
-        
+        if (tag == 0x03) break;
+
         // Explicitly handle known group delimiter tags
         if (tag == 0x01 || tag == 0x02 || tag == 0x04 || tag == 0x05 || tag == 0x06) {
-            continue; 
+            continue;
         }
-        
+
         // Ensure space for Name Length (2 bytes)
         if (length - offset < 2) { malformed = true; break; }
         uint16_t name_len = (payload[offset] << 8) | payload[offset + 1];
         offset += 2;
-        
+
         // Ensure space for Name string
         if (length - offset < name_len) { malformed = true; break; }
         const uint8_t* name_ptr = &payload[offset];
         offset += name_len;
-        
+
         // Ensure space for Value Length (2 bytes)
         if (length - offset < 2) { malformed = true; break; }
         uint16_t val_len = (payload[offset] << 8) | payload[offset + 1];
         offset += 2;
-        
+
         // Ensure space for Value payload
         if (length - offset < val_len) { malformed = true; break; }
         const uint8_t* val_ptr = &payload[offset];
@@ -307,7 +307,7 @@ bool parse_ipp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
             }
             user[copy_len] = '\0';
             found_user = true;
-        } 
+        }
         else if (name_len == 13 && memcmp(name_ptr, "document-name", 13) == 0) {
             size_t copy_len = std::min((size_t)val_len, sizeof(doc) - 1);
             for (size_t j = 0; j < copy_len; j++) {
@@ -434,16 +434,16 @@ bool parse_rtsp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
     const char* payload_end = p + length;
 
     // Fast gate: Ensure this is actually RTSP traffic
-    bool is_rtsp = (memcmp(p, "RTSP/1.", 7) == 0 || memcmp(p, "OPTIONS ", 8) == 0 || 
-                    memcmp(p, "DESCRIBE ", 9) == 0 || memcmp(p, "SETUP ", 6) == 0 || 
+    bool is_rtsp = (memcmp(p, "RTSP/1.", 7) == 0 || memcmp(p, "OPTIONS ", 8) == 0 ||
+                    memcmp(p, "DESCRIBE ", 9) == 0 || memcmp(p, "SETUP ", 6) == 0 ||
                     memcmp(p, "PLAY ", 5) == 0 || memcmp(p, "TEARDOWN ", 9) == 0);
-    
+
     if (!is_rtsp) return false;
 
     char device_info[64] = {0};
     char uri[64] = {0};
     char auth_type[16] = {0};
-    char auth_creds[64] = {0}; 
+    char auth_creds[64] = {0};
     bool found_intel = false;
 
     // The longest needles we check inside the loop are exactly 21 bytes long
@@ -452,13 +452,13 @@ bool parse_rtsp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
 
     // Sliding window to sweep for all metadata in one pass
     for (int i = 0; i <= max_i; i++) {
-        
+
         // 1. Extract Hardware / Software Identifier (First match wins)
         if (device_info[0] == '\0') {
             const char* id_start = nullptr;
             if (memcmp(&p[i], "Server: ", 8) == 0) id_start = &p[i+8];
             else if (memcmp(&p[i], "User-Agent: ", 12) == 0) id_start = &p[i+12];
-            
+
             if (id_start) {
                 const char* end = id_start;
                 while (end < payload_end && *end != '\r' && *end != '\n') end++;
@@ -483,11 +483,11 @@ bool parse_rtsp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
         if (auth_type[0] == '\0') {
             if (memcmp(&p[i], "Authorization: Basic ", 21) == 0) {
                 snprintf(auth_type, sizeof(auth_type), "Basic");
-                
+
                 const char* b64_start = &p[i + 21];
                 const char* b64_end = b64_start;
                 while (b64_end < payload_end && *b64_end != '\r' && *b64_end != '\n' && *b64_end != ' ') b64_end++;
-                
+
                 int copy_len = std::min((int)(b64_end - b64_start), 63);
                 if (copy_len > 0) {
                     memcpy(auth_creds, b64_start, copy_len);
@@ -517,7 +517,7 @@ bool parse_rtsp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
 
     // Assemble the final tactical string
     int idx = snprintf(out_text, max_len, "RTSP Cam");
-    
+
     if (device_info[0] != '\0') {
         idx += snprintf(out_text + idx, max_len - idx, ": %s", device_info);
     }
@@ -544,10 +544,10 @@ bool parse_ftp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
     // 1. Hunt for authentication commands (Case-insensitive using strncasecmp)
     if (strncasecmp(p, "USER ", 5) == 0 || strncasecmp(p, "PASS ", 5) == 0) {
         const char* end = p;
-        
+
         // Read until the end of the line
         while (end < p + length && *end != '\r' && *end != '\n') end++;
-        
+
         int copy_len = std::min((int)(end - p), (int)(max_len - 6));
         if (copy_len > 0) {
             snprintf(out_text, max_len, "FTP: %.*s", copy_len, p);
@@ -564,12 +564,12 @@ bool parse_ftp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
         snprintf(out_text, max_len, "FTP: Login Failed");
         return true;
     }
-    
+
     // 3. Catch Data Connection Routing (PASV / PORT)
     if (strncasecmp(p, "PORT ", 5) == 0 || memcmp(p, "227 ", 4) == 0) {
         const char* tuple_start = nullptr;
         int search_len = std::min((int)length, 64); // Bound the search space
-        
+
         if (memcmp(p, "227 ", 4) == 0) {
             // Find the opening parenthesis for PASV: 227 Entering Passive Mode (h1,h2,h3,h4,p1,p2)
             for (int i = 4; i < search_len; i++) {
@@ -587,7 +587,7 @@ bool parse_ftp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
             // Extract the tuple into a safe, null-terminated buffer
             char tuple_buf[64] = {0};
             int i = 0;
-            while (tuple_start + i < p + length && tuple_start[i] != '\r' && 
+            while (tuple_start + i < p + length && tuple_start[i] != '\r' &&
                    tuple_start[i] != ')' && i < 63) {
                 tuple_buf[i] = tuple_start[i];
                 i++;
@@ -599,9 +599,9 @@ bool parse_ftp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
                 bool valid = (h1 >= 0 && h1 <= 255) && (h2 >= 0 && h2 <= 255) &&
                              (h3 >= 0 && h3 <= 255) && (h4 >= 0 && h4 <= 255) &&
                              (p1 >= 0 && p1 <= 255) && (p2 >= 0 && p2 <= 255);
-                
+
                 if (valid) {
-                    uint16_t port = (p1 << 8) | p2; 
+                    uint16_t port = (p1 << 8) | p2;
                     snprintf(out_text, max_len, "FTP Data: %d.%d.%d.%d:%u", h1, h2, h3, h4, port);
                     return true;
                 }
@@ -621,7 +621,7 @@ bool parse_telnet(const uint8_t* payload, uint16_t length, char* out_text, size_
 
     // Use uint16_t to strictly match the 'length' variable type
     for (uint16_t i = 0; i < length && write_idx < sizeof(clean_text) - 1; i++) {
-        
+
         // Handle Telnet IAC (Interpret As Command)
         if (payload[i] == 0xFF) {
             if (i + 1 >= length) break;
@@ -645,7 +645,7 @@ bool parse_telnet(const uint8_t* payload, uint16_t length, char* out_text, size_
         // Only grab printable ASCII characters
         if (payload[i] >= 32 && payload[i] <= 126) {
             clean_text[write_idx++] = payload[i];
-        } 
+        }
         // Stop if we hit a newline (extracts only the first line of the packet)
         else if (payload[i] == '\r' || payload[i] == '\n') {
             if (write_idx > 0) break;
@@ -673,7 +673,7 @@ bool parse_tftp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
     // ------------------------------------------
     uint16_t pos = 2;
     while (pos < length && payload[pos] != '\0') pos++;
-    
+
     if (pos >= length || pos == 2) return false;
     uint16_t filename_len = pos - 2;
 
@@ -684,7 +684,7 @@ bool parse_tftp(const uint8_t* payload, uint16_t length, char* out_text, size_t 
     // ------------------------------------------
     uint16_t mode_start = pos;
     while (pos < length && payload[pos] != '\0') pos++;
-    
+
     if (pos >= length || pos == mode_start) return false;
     uint16_t mode_len = pos - mode_start;
 
@@ -841,11 +841,11 @@ bool parse_smb(const uint8_t* payload, uint16_t length, char* out_text, size_t m
     if (length < 20 || payload == nullptr || out_text == nullptr || max_len < 40) return false;
 
     const char magic_sig[] = "NTLMSSP\0";
-    int max_i = (int)length - 20; 
+    int max_i = (int)length - 20;
 
     for (int i = 0; i <= max_i; i++) {
         if (memcmp(&payload[i], magic_sig, 8) == 0) {
-            
+
             uint8_t msg_type = payload[i + 8];
             uint32_t rem = length - i;
 
@@ -854,10 +854,10 @@ bool parse_smb(const uint8_t* payload, uint16_t length, char* out_text, size_t m
             // ---------------------------------------------------------
             if (msg_type == 0x01) {
                 if ((uint32_t)i + 32 > length) continue; // 2. Message-specific length check
-                
+
                 uint16_t dom_len = payload[i + 16] | (payload[i + 17] << 8);
                 uint32_t dom_off = payload[i + 20] | (payload[i + 21] << 8) | (payload[i + 22] << 16) | (payload[i + 23] << 24);
-                
+
                 uint16_t ws_len = payload[i + 24] | (payload[i + 25] << 8);
                 uint32_t ws_off = payload[i + 28] | (payload[i + 29] << 8) | (payload[i + 30] << 16) | (payload[i + 31] << 24);
 
@@ -887,7 +887,7 @@ bool parse_smb(const uint8_t* payload, uint16_t length, char* out_text, size_t m
                     return true;
                 }
             }
-            
+
             // ---------------------------------------------------------
             // Type 2: Challenge (Server -> Client)
             // ---------------------------------------------------------

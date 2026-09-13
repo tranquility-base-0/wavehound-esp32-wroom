@@ -19,16 +19,16 @@
 void drawTelemetryHeader(uint32_t leaks, uint32_t enqueued, uint32_t attempted) {
     // Pure renderer: values are snapshotted and reset in loop()'s DIAG block.
     tft.setFreeFont(&UbuntuMono_Regular8pt7b);
-    tft.setTextDatum(TL_DATUM); 
+    tft.setTextDatum(TL_DATUM);
     tft.setTextColor(COLOR_HOT_CHEST, TFT_BLACK);
-    
+
     // Erase the old numbers (Aligned to the OTHER wipe zone)
-    tft.fillRect(285, 0, 135, 20, TFT_BLACK); 
-    
+    tft.fillRect(285, 0, 135, 20, TFT_BLACK);
+
     // displayed / enqueued / attempted — 4-digit fields to prevent jitter
     char stat_text[32];
     snprintf(stat_text, sizeof(stat_text), "%4u/%4u/%4u", leaks, enqueued, attempted);
-    
+
     tft.drawString(stat_text, 285, 1);
 }
 void drawChartHeader() {
@@ -40,13 +40,13 @@ void drawChartHeader() {
   // MENU BUTTON
   tft.drawRoundRect(420, 1, 55, 16, 2, TFT_WHITE);
   tft.setTextColor(TFT_WHITE);
-  tft.setFreeFont(&UbuntuMono_Regular9pt7b);  
-  tft.setTextDatum(MC_DATUM);     
-  tft.drawString("MENU", 447, 7); 
-  tft.setTextDatum(TL_DATUM);     
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  tft.setTextDatum(MC_DATUM);
+  tft.drawString("MENU", 447, 7);
+  tft.setTextDatum(TL_DATUM);
 
   // BANNER
-  tft.setTextWrap(false); 
+  tft.setTextWrap(false);
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
   tft.setTextDatum(TL_DATUM);
 
@@ -55,10 +55,10 @@ void drawChartHeader() {
   // ==========================================
   // THE 4-STATE HEADER LOGIC
   // ==========================================
-  tft.setTextColor(COLOR_HOT_CHEST); 
+  tft.setTextColor(COLOR_HOT_CHEST);
   if (currentRadioMode == RADIO_BLE) {
     snprintf(bannerStr, sizeof(bannerStr), "SNIFFING BLE DEVICES");
-  } 
+  }
   else if (currentRadioMode == RADIO_AP) {
     if (!target_locked) {
         snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | SNIFFING NETWORKS", CHANNELS[current_ch_idx]);
@@ -66,17 +66,17 @@ void drawChartHeader() {
         snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | TARGET LOCKED", target_channel);
     }
   }
-  else if (currentRadioMode == RADIO_CHANNELS) { 
+  else if (currentRadioMode == RADIO_CHANNELS) {
     snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | SNIFFING SPECTRUM", CHANNELS[current_ch_idx]);
   }
-  else if (currentRadioMode == RADIO_PCAP) { 
+  else if (currentRadioMode == RADIO_PCAP) {
     if (!target_locked) {
       snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (HOPPING)", CHANNELS[current_ch_idx]);
     } else {
       snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (LOCKED)", target_channel);
     }
   }
-  else if (currentRadioMode == RADIO_WIFI) {    
+  else if (currentRadioMode == RADIO_WIFI) {
     if (!target_locked) {
       snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | FREE AIRSPACE", CHANNELS[current_ch_idx]);
     } else {
@@ -93,16 +93,16 @@ void drawChartFooter() {
 
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
   tft.setTextColor(TFT_WHITE);
-  tft.setTextDatum(MC_DATUM); 
+  tft.setTextDatum(MC_DATUM);
 
   if (currentRadioMode != RADIO_PCAP) {
       // ==========================================
       // ZONE 1: SORT METRIC (Center X = 72)
       // ==========================================
-      tft.drawRoundRect(2, 302, 141, 17, 3, TFT_WHITE); 
+      tft.drawRoundRect(2, 302, 141, 17, 3, TFT_WHITE);
 
-      char metricStr[32] = "SORT: ERR"; 
-      
+      char metricStr[32] = "SORT: ERR";
+
       if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP) {
         if (currentSortMode == SORT_TOTAL) { strcpy(metricStr, "SORT: TOTAL"); tft.setTextColor(TFT_WHITE); }
         else if (currentSortMode == SORT_TX) { strcpy(metricStr, "SORT: TX"); tft.setTextColor(TFT_CYAN); }
@@ -111,7 +111,7 @@ void drawChartFooter() {
         else if (currentSortMode == SORT_CV) { strcpy(metricStr, "SORT: CV%"); tft.setTextColor(TFT_ORANGE); }
         else if (currentSortMode == SORT_DIST) { strcpy(metricStr, "SORT: DIST"); tft.setTextColor(TFT_GREEN); }
         else if (currentSortMode == SORT_AGE) { strcpy(metricStr, "SORT: AGE"); tft.setTextColor(TFT_BLUE); }
-      } 
+      }
       else if (currentRadioMode == RADIO_CHANNELS) {
         if (currentSortMode == SORT_TOTAL) { strcpy(metricStr, "SORT: TOTAL"); tft.setTextColor(TFT_WHITE); }
         else if (currentSortMode == SORT_TX) { strcpy(metricStr, "SORT: DN"); tft.setTextColor(TFT_CYAN); }
@@ -126,30 +126,30 @@ void drawChartFooter() {
         else if (currentBleSortMode == SORT_BLE_DIST) { strcpy(metricStr, "SORT: DIST"); tft.setTextColor(TFT_GREEN); }
         else if (currentBleSortMode == SORT_BLE_AGE) { strcpy(metricStr, "SORT: AGE"); tft.setTextColor(TFT_BLUE); }
       }
-      
+
       tft.drawString(metricStr, 72, 308);
       tft.setTextColor(TFT_WHITE);
-      
+
       // ==========================================
       // ZONE 2: SORT DIRECTION (Center X = 217)
       // ==========================================
-      tft.drawRoundRect(147, 302, 141, 17, 3, TFT_WHITE); 
+      tft.drawRoundRect(147, 302, 141, 17, 3, TFT_WHITE);
 
       if (sort_descending) {
         tft.drawString("ORDER: DESC", 217, 309);
       } else {
-        tft.setTextColor(TFT_GREEN); 
+        tft.setTextColor(TFT_GREEN);
         tft.drawString("ORDER: ASC", 217, 309);
-        tft.setTextColor(TFT_WHITE); 
+        tft.setTextColor(TFT_WHITE);
       }
 
       // ==========================================
       // ZONE 3: SCALE MODE (Center X = 362)
       // ==========================================
-      tft.drawRoundRect(292, 302, 141, 17, 3, TFT_WHITE); 
+      tft.drawRoundRect(292, 302, 141, 17, 3, TFT_WHITE);
 
       if (useLogScale) {
-        tft.setTextColor(TFT_YELLOW); 
+        tft.setTextColor(TFT_YELLOW);
         tft.drawString("SCALE: LOG", 362, 309);
       } else {
         tft.drawString("SCALE: LIN", 362, 309);
@@ -159,22 +159,22 @@ void drawChartFooter() {
       tft.setTextColor(TFT_DARKGREY);
       // Draw the static time scale on the far left
       tft.setTextDatum(TL_DATUM);
-      tft.drawString("|=2m", 10, 301); 
-      
+      tft.drawString("|=2m", 10, 301);
+
       // Draw the main status label perfectly centered
       tft.setTextDatum(MC_DATUM);
       tft.drawString("PROMISCUOUS CAPTURE MODE", 240, 309); // 240 is true center of 480px screen
       tft.setTextColor(TFT_WHITE);
   }
-    
+
   // ==========================================
   // ZONE 4: BATTERY PLACEHOLDER
   // ==========================================
-  tft.drawRect(445, 304, 22, 12, TFT_WHITE); 
-  tft.fillRect(467, 307, 3, 6, TFT_WHITE);   
-  tft.fillRect(447, 306, 18, 8, TFT_GREEN);  
-  
-  tft.setTextDatum(TL_DATUM); 
+  tft.drawRect(445, 304, 22, 12, TFT_WHITE);
+  tft.fillRect(467, 307, 3, 6, TFT_WHITE);
+  tft.fillRect(447, 306, 18, 8, TFT_GREEN);
+
+  tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE);
 }
 void drawPersistentTopN() {
@@ -190,7 +190,7 @@ void drawPersistentTopN() {
     if (top_count > 10) top_count = 10;
 
     // 1. Static state trackers for delta-drawing (REMOVED HEAP-FRAG STRINGS)
-    static char lastLabels[10][32] = {0}; 
+    static char lastLabels[10][32] = {0};
     static int lastTopCount = 0;
     static uint8_t lastRadioMode = 255; // 255 forces an initial redraw on boot
 
@@ -207,25 +207,25 @@ void drawPersistentTopN() {
 
     for (int i = 0; i < top_count; i++) {
         // Grid Math
-        int col = i % 2;           
-        int row = i / 2;           
-        
-        int x_pos = 5 + (col * 240);       
-        int y_pos = 18 + (row * 16);  
+        int col = i % 2;
+        int row = i / 2;
+
+        int x_pos = 5 + (col * 240);
+        int y_pos = 18 + (row * 16);
 
         char display_name[28] = "Unknown"; // Buffer for the raw text
 
         if (currentRadioMode == RADIO_WIFI) {
             strncpy(display_name, sessionData[i].vendor, 26);
             display_name[26] = '\0';
-        } 
+        }
         else if (currentRadioMode == RADIO_BLE) {
             if (strlen((char*)sessionBleData[i].name) > 0) {
                 strncpy(display_name, (char*)sessionBleData[i].name, 26);
                 display_name[26] = '\0';
             } else {
-                snprintf(display_name, sizeof(display_name), "%02X:%02X:%02X:%02X:%02X:%02X", 
-                         sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2], 
+                snprintf(display_name, sizeof(display_name), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2],
                          sessionBleData[i].mac[3], sessionBleData[i].mac[4], sessionBleData[i].mac[5]);
             }
         }
@@ -234,10 +234,10 @@ void drawPersistentTopN() {
             if (strcmp(sessionApData[i].ssid, "<HIDDEN>") == 0 || strcmp(sessionApData[i].ssid, "<UNKNOWN>") == 0) {
                 snprintf(display_name, sizeof(display_name), "%s", sessionApData[i].ssid);
             } else if (sessionApData[i].has_clone) {
-                char temp_ssid[22]; 
+                char temp_ssid[22];
                 strncpy(temp_ssid, sessionApData[i].ssid, 21); // 21 chars max for list
                 temp_ssid[21] = '\0';
-                snprintf(display_name, sizeof(display_name), "%s~%02X%02X", 
+                snprintf(display_name, sizeof(display_name), "%s~%02X%02X",
                          temp_ssid, sessionApData[i].bssid[4], sessionApData[i].bssid[5]);
             } else {
                 strncpy(display_name, sessionApData[i].ssid, 26); // 26 chars max for list
@@ -264,14 +264,14 @@ void drawPersistentTopN() {
         // 3. Delta Check: Only draw if the string changed or a mode swap forced it
         if (forceRedraw || strcmp(label, lastLabels[i]) != 0) {
             if (!forceRedraw) {
-                // Wipe just this specific 235x16 cell to prevent trailing characters 
+                // Wipe just this specific 235x16 cell to prevent trailing characters
                 // from a previous, longer string ghosting on the screen.
                 tft.fillRect(x_pos, y_pos, 235, 16, TFT_BLACK);
             }
-            
+
             tft.setTextColor(TFT_WHITE, TFT_BLACK);
             tft.drawString(label, x_pos, y_pos);
-            
+
             // Store the new label for future delta checks
             strncpy(lastLabels[i], label, sizeof(lastLabels[i]) - 1);
             lastLabels[i][sizeof(lastLabels[i]) - 1] = '\0';
@@ -284,7 +284,7 @@ void drawPersistentTopN() {
         int row = i / 2;
         int x_pos = 5 + (col * 240);
         int y_pos = 18 + (row * 16);
-        
+
         tft.fillRect(x_pos, y_pos, 235, 16, TFT_BLACK);
         lastLabels[i][0] = '\0'; // Clear the tracker
     }
@@ -300,7 +300,7 @@ void drawTemporalLegend() {
 
     // Bail early if there's nothing to draw
     if (!(displayCount > 0 || ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS) && sortOtherBytes > 0))) {
-        return; 
+        return;
     }
 
     // 1. CALCULATE AND DRAW "OTHER" IN THE TOP MENU BANNER
@@ -311,17 +311,17 @@ void drawTemporalLegend() {
     }
 
     tft.setFreeFont(&UbuntuMono_Regular9pt7b);
-    tft.setTextDatum(TL_DATUM); 
+    tft.setTextDatum(TL_DATUM);
     tft.setTextColor(COLOR_HOT_CHEST, TFT_BLACK);
-    
+
     // FIX 1: Start the wipe at y=0 to catch the top ascenders of the font.
     // Height expanded to 20 to fully encapsulate the 9pt7b bounding box.
     tft.fillRect(315, 0, 95, 20, TFT_BLACK);
-    
+
     char otherStr[16];
     // FIX 2: Force a 2-digit format so the string is always the exact same length
     snprintf(otherStr, sizeof(otherStr), "OTHER:%d", otherCount);
-    
+
     // The text draws starting at y=1, safely inside the wiped area!
     tft.drawString(otherStr, 315, 1);
 
@@ -329,7 +329,7 @@ void drawTemporalLegend() {
     int start_y = HEADER_HEIGHT - 6;
     // Wipe exactly the space between the header line and the chart
     tft.fillRect(0, start_y, 480, chart_start_y - start_y, TFT_BLACK);
-    
+
     tft.setFreeFont(&UbuntuMono_Regular11pt7b);
 
     int renderCount = 0;
@@ -345,26 +345,26 @@ void drawTemporalLegend() {
         if (currentRadioMode == RADIO_WIFI) {
             strncpy(short_text, sortData[i].vendor, 19);
             short_text[19] = '\0';
-        } 
+        }
         else if (currentRadioMode == RADIO_BLE) {
             if (strlen(sortBleData[i].name) > 0) {
                 strncpy(short_text, sortBleData[i].name, 19);
                 short_text[19] = '\0';
             } else {
-                snprintf(short_text, sizeof(short_text), "%02X:%02X:%02X:%02X:%02X:%02X", 
-                         sortBleData[i].mac[0], sortBleData[i].mac[1], sortBleData[i].mac[2], 
+                snprintf(short_text, sizeof(short_text), "%02X:%02X:%02X:%02X:%02X:%02X",
+                         sortBleData[i].mac[0], sortBleData[i].mac[1], sortBleData[i].mac[2],
                          sortBleData[i].mac[3], sortBleData[i].mac[4], sortBleData[i].mac[5]);
             }
-        } 
+        }
         else if (currentRadioMode == RADIO_AP) {
             // Uses sortApData, short_text, and tighter truncation bounds
             if (strcmp(sortApData[i].ssid, "<HIDDEN>") == 0 || strcmp(sortApData[i].ssid, "<UNKNOWN>") == 0) {
                 snprintf(short_text, sizeof(short_text), "%s", sortApData[i].ssid);
             } else if (sortApData[i].has_clone) {
-                char temp_ssid[16]; 
+                char temp_ssid[16];
                 strncpy(temp_ssid, sortApData[i].ssid, 14); // 14 chars max for legend
                 temp_ssid[14] = '\0';
-                snprintf(short_text, sizeof(short_text), "%s~%02X%02X", 
+                snprintf(short_text, sizeof(short_text), "%s~%02X%02X",
                          temp_ssid, sortApData[i].bssid[4], sortApData[i].bssid[5]);
             } else {
                 strncpy(short_text, sortApData[i].ssid, 19); // 19 chars max for legend
@@ -376,18 +376,18 @@ void drawTemporalLegend() {
         }
 
         tft.setTextColor(colors[i]);
-        
+
         // Grid Math (3 rows x 2 columns)
-        int x_pos = 5 + (i % 2) * 240; 
-        int y_pos = start_y + (i / 2) * 20; 
+        int x_pos = 5 + (i % 2) * 240;
+        int y_pos = start_y + (i / 2) * 20;
 
         // UPDATED: Eliminated dynamic String object for pure char array
         char label[32];
         snprintf(label, sizeof(label), "%d.%s", i + 1, short_text);
-        
+
         tft.drawString(label, x_pos, y_pos);
     }
-    
+
     // Draw the white separator line between the new bottom legend and the waterfall chart
     tft.drawLine(0, chart_start_y, 480, chart_start_y, COLOR_HOT_CHEST);
 }
@@ -399,16 +399,16 @@ void drawWaterfallChart() {
     }
 
     int chart_area_height = CHART_BOTTOM - chart_start_y;
-    
+
     // FIX 3: Use the exact same 3/4 split for ALL modes to keep the bottom graph height identical
-    int split_y = chart_start_y + (chart_area_height * 3) / 4; 
-    
+    int split_y = chart_start_y + (chart_area_height * 3) / 4;
+
     int ERASER_WIDTH = 44;
 
     // 3. Adjust the eraser to ONLY clear the bottom pane in PCAP mode
     int clear_start_y = (currentRadioMode == RADIO_PCAP) ? (split_y + 1) : (chart_start_y + 1);
     int clear_height = CHART_BOTTOM - clear_start_y;
-    
+
     // Pure wipe logic (using dynamic clear_start_y and clear_height)
     if (current_x + ERASER_WIDTH <= 480) {
         tft.fillRect(current_x, clear_start_y, ERASER_WIDTH, clear_height, TFT_BLACK);
@@ -427,14 +427,14 @@ void drawWaterfallChart() {
         tft.drawPixel(current_x + 1, split_y, COLOR_HOT_CHEST);
     }
 
-    int current_y = split_y - 1; 
+    int current_y = split_y - 1;
     uint32_t current_total_metric = 0;
 
     // --- CHART PLOTTING ---
     if (currentRadioMode == RADIO_WIFI) {
         uint32_t total_bytes = sortOtherBytes;
         for(int i = 0; i < 6 && i < sortMacCount; i++) total_bytes += (sortData[i].tx_bytes + sortData[i].rx_bytes);
-        current_total_metric = total_bytes; 
+        current_total_metric = total_bytes;
 
         if (total_bytes > 0) {
             double log_total = 0;
@@ -478,9 +478,9 @@ void drawWaterfallChart() {
         for(int i = 0; i < ble_count; i++) total_hits += sortBleData[i].hits;
         if (sortBleCount > 6) {
             for (int i = 6; i < sortBleCount; i++) other_hits += sortBleData[i].hits;
-            total_hits += other_hits; 
+            total_hits += other_hits;
         }
-        current_total_metric = total_hits; 
+        current_total_metric = total_hits;
 
         if (total_hits > 0) {
             double log_total = 0;
@@ -493,7 +493,7 @@ void drawWaterfallChart() {
                 double fraction;
                 if (useLogScale) fraction = log10((double)sortBleData[i].hits + 1.0) / log_total;
                 else fraction = (double)sortBleData[i].hits / (double)total_hits;
-                
+
                 int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
                 if (bar_height > (split_y - chart_start_y - 1)) bar_height = split_y - chart_start_y - 1;
 
@@ -501,7 +501,7 @@ void drawWaterfallChart() {
                 tft.drawLine(current_x + 1, current_y, current_x + 1, current_y - bar_height, colors[i]);
                 current_y -= bar_height;
             }
-            
+
             if (other_hits > 0 && current_y > chart_start_y) {
                 tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[8]);
                 tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[8]);
@@ -514,7 +514,7 @@ void drawWaterfallChart() {
     else if (currentRadioMode == RADIO_AP) {
         uint32_t total_bytes = sortOtherBytes;
         for(int i = 0; i < 6 && i < sortApCount; i++) total_bytes += (sortApData[i].tx_bytes + sortApData[i].rx_bytes);
-        current_total_metric = total_bytes; 
+        current_total_metric = total_bytes;
 
         if (total_bytes > 0) {
             double log_total = 0;
@@ -529,7 +529,7 @@ void drawWaterfallChart() {
             for(int i = 0; i < 6 && i < sortApCount; i++) {
                 double fraction;
                 uint32_t current_device_bytes = sortApData[i].tx_bytes + sortApData[i].rx_bytes;
-                
+
                 if (useLogScale) fraction = log10((double)current_device_bytes + 1.0) / log_total;
                 else fraction = (double)current_device_bytes / (double)total_bytes;
 
@@ -553,7 +553,7 @@ void drawWaterfallChart() {
     else if (currentRadioMode == RADIO_CHANNELS) {
         uint32_t total_bytes = sortOtherBytes;
         for(int i = 0; i < 6 && i < sortChannelCount; i++) total_bytes += (sortChannelData[i].tx_bytes + sortChannelData[i].rx_bytes);
-        current_total_metric = total_bytes; 
+        current_total_metric = total_bytes;
 
         if (total_bytes > 0) {
             double log_total = 0;
@@ -568,7 +568,7 @@ void drawWaterfallChart() {
             for(int i = 0; i < 6 && i < sortChannelCount; i++) {
                 double fraction;
                 uint32_t current_c_bytes = sortChannelData[i].tx_bytes + sortChannelData[i].rx_bytes;
-                
+
                 if (useLogScale) fraction = log10((double)current_c_bytes + 1.0) / log_total;
                 else fraction = (double)current_c_bytes / (double)total_bytes;
 
@@ -592,17 +592,17 @@ void drawWaterfallChart() {
     static uint32_t last_rendered_leak_timestamp = 0;
     if (currentRadioMode == RADIO_PCAP) {
         current_total_metric = capture_bytes_render;
-        
+
         // Redraw only if the newest packet in the buffer has changed
         if (terminal_history[0].meta.timestamp != last_rendered_leak_timestamp && terminal_history[0].meta.timestamp > 0) {
             last_rendered_leak_timestamp = terminal_history[0].meta.timestamp;
 
             int terminal_start_y = 26;
             tft.fillRect(0, terminal_start_y, 480, split_y - terminal_start_y - 1, TFT_BLACK);
-            
+
             tft.setFreeFont(&UbuntuMono_Regular8pt7b);
             tft.setTextDatum(TL_DATUM);
-            
+
             int cursor_y = terminal_start_y + 4;
 
 // --- PASS 1: figure out which packets actually fit, newest-first ---
@@ -626,7 +626,7 @@ int drawCount = 0;
 
 // --- PASS 2: draw them oldest-of-the-kept-set first, for the scroll effect ---
 for (int k = drawCount - 1; k >= 0; k--) {
-    int i = drawIdx[k]; 
+    int i = drawIdx[k];
 
                 // ==========================================
 // LIVE VENDOR LOOKUP — RAM CACHE ONLY
@@ -684,22 +684,22 @@ if (terminal_history[i].meta.ip_version == 6) {
                 uint32_t now_ms = millis();
                 uint32_t first_sec = (now_ms - terminal_first_seen[i]) / 1000;
                 uint32_t last_sec = (now_ms - terminal_history[i].meta.timestamp) / 1000;
-                
+
                 if (first_sec < 60) snprintf(firstSeenStr, sizeof(firstSeenStr), "%ds", first_sec);
                 else if (first_sec < 3600) snprintf(firstSeenStr, sizeof(firstSeenStr), "%dm", first_sec / 60);
                 else snprintf(firstSeenStr, sizeof(firstSeenStr), "%dh", first_sec / 3600);
-                
+
                 if (last_sec < 60) snprintf(lastSeenStr, sizeof(lastSeenStr), "%ds", last_sec);
                 else if (last_sec < 3600) snprintf(lastSeenStr, sizeof(lastSeenStr), "%dm", last_sec / 60);
                 else snprintf(lastSeenStr, sizeof(lastSeenStr), "%dh", last_sec / 3600);
-                
+
                 snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
                 // 5. Fetch Live SSID (Using persistent cache to bypass the union)
                 char safeSsid[13] = "Unknown";
                 for (int ap = 0; ap < MAX_BSSID_CACHE; ap++) {
                     if (bssidCache[ap].last_seen == 0) continue; // Skip empty slots
-                    
+
                     if (memcmp(terminal_history[i].meta.bssid, bssidCache[ap].bssid, 6) == 0) {
                         strncpy(safeSsid, bssidCache[ap].ssid, 12);
                         safeSsid[12] = '\0';
@@ -718,7 +718,7 @@ if (terminal_history[i].meta.ip_version == 6) {
                          terminal_history[i].meta.dst_mac[3], terminal_history[i].meta.dst_mac[4], terminal_history[i].meta.dst_mac[5],
                          dstVend, lenStr, terminal_history[i].meta.channel);
                 tft.drawString(line1, 4, cursor_y);
-                cursor_y += 14; 
+                cursor_y += 14;
 
                 // --- ROW 2: BSSID(SSID)|DIR|SUBTYPE|PROTO|PORTS ---
                 tft.setTextColor(TFT_YELLOW);
@@ -731,7 +731,7 @@ if (terminal_history[i].meta.ip_version == 6) {
                          terminal_history[i].meta.bssid[0], terminal_history[i].meta.bssid[1], terminal_history[i].meta.bssid[2],
                          terminal_history[i].meta.bssid[3], terminal_history[i].meta.bssid[4], terminal_history[i].meta.bssid[5],
                          safeSsid,
-                         getDirectionStr(terminal_history[i].meta.direction), 
+                         getDirectionStr(terminal_history[i].meta.direction),
                          getSubtypeStr(terminal_history[i].meta.frame_subtype),
                          getProtocolStr(terminal_history[i].meta.protocol), portStr);
                 tft.drawString(line2, 4, cursor_y);
@@ -743,7 +743,7 @@ if (terminal_history[i].meta.ip_version == 6) {
                 snprintf(line3, sizeof(line3), "%s>%s|%s",
                          srcIpStr, dstIpStr, ageCombo);
                 tft.drawString(line3, 4, cursor_y);
-                cursor_y += 14; 
+                cursor_y += 14;
 
                 // --- ROW 4 & 5: PAYLOAD ---
 tft.setTextColor(TFT_GREEN);
@@ -776,39 +776,39 @@ cursor_y += 5;
 
     // --- BOTTOM PANE: SCALING ENGINE ---
     static RadioMode last_seen_mode = currentRadioMode;
-    static uint8_t last_seen_bssid[6] = {0}; 
-    
+    static uint8_t last_seen_bssid[6] = {0};
+
     static uint32_t true_max = 10;
     static uint16_t peak_h_index = 0;
-    
-    bool did_rescale = false; 
+
+    bool did_rescale = false;
 
     if (currentRadioMode != last_seen_mode || memcmp(target_bssid, last_seen_bssid, 6) != 0) {
         true_max = 10;
         peak_h_index = 0;
-        absolute_max_traffic = 10; 
-        
+        absolute_max_traffic = 10;
+
         last_seen_mode = currentRadioMode;
-        memcpy(last_seen_bssid, target_bssid, 6); 
+        memcpy(last_seen_bssid, target_bssid, 6);
 
         memset(traffic_history, 0, sizeof(traffic_history));
-        did_rescale = true; 
+        did_rescale = true;
     }
 
     int h_index = current_x / 2;
-    traffic_history[h_index] = current_total_metric; 
+    traffic_history[h_index] = current_total_metric;
 
     if (current_total_metric > absolute_max_traffic) {
         true_max = current_total_metric;
         peak_h_index = h_index;
-        absolute_max_traffic = current_total_metric + (current_total_metric / 5); 
-        did_rescale = true; 
+        absolute_max_traffic = current_total_metric + (current_total_metric / 5);
+        did_rescale = true;
     } else {
         if (current_total_metric > true_max) {
             true_max = current_total_metric;
             peak_h_index = h_index;
         }
-        
+
         if (h_index == peak_h_index && current_total_metric < true_max) {
             true_max = 0;
             for (int i = 0; i < 240; i++) {
@@ -817,13 +817,13 @@ cursor_y += 5;
                     peak_h_index = i;
                 }
             }
-            
+
             uint32_t next_scale = true_max + (true_max / 5);
-            if (next_scale < 10) next_scale = 10; 
-            
+            if (next_scale < 10) next_scale = 10;
+
             if (next_scale < absolute_max_traffic) {
                 absolute_max_traffic = next_scale;
-                did_rescale = true; 
+                did_rescale = true;
             }
         }
     }
@@ -841,8 +841,8 @@ cursor_y += 5;
 
             if (traffic_history[c] > 0) {
                 int h = (int)(((double)traffic_history[c] / (double)absolute_max_traffic) * (CHART_BOTTOM - split_y - 1));
-                if (h > CHART_BOTTOM - split_y - 4) h = CHART_BOTTOM - split_y - 4; 
-                
+                if (h > CHART_BOTTOM - split_y - 4) h = CHART_BOTTOM - split_y - 4;
+
                 tft.drawLine(px, CHART_BOTTOM, px, CHART_BOTTOM - h, COLOR_HOT_CHEST);
                 tft.drawLine(px + 1, CHART_BOTTOM, px + 1, CHART_BOTTOM - h, COLOR_HOT_CHEST);
             }
@@ -850,8 +850,8 @@ cursor_y += 5;
     } else {
         if (current_total_metric > 0) {
             int h = (int)(((double)current_total_metric / (double)absolute_max_traffic) * (CHART_BOTTOM - split_y - 1));
-            if (h > CHART_BOTTOM - split_y - 4) h = CHART_BOTTOM - split_y - 4; 
-            
+            if (h > CHART_BOTTOM - split_y - 4) h = CHART_BOTTOM - split_y - 4;
+
             tft.drawLine(current_x, CHART_BOTTOM, current_x, CHART_BOTTOM - h, COLOR_HOT_CHEST);
             tft.drawLine(current_x + 1, CHART_BOTTOM, current_x + 1, CHART_BOTTOM - h, COLOR_HOT_CHEST);
         }
@@ -860,7 +860,7 @@ cursor_y += 5;
     // --- OVERLAYS ---
     // Gate the sweeping vertical lines to ONLY draw in the area below clear_start_y
     tft.drawFastVLine(current_x + 2, clear_start_y, clear_height, COLOR_HOT_CHEST);
-    
+
     if (current_x + ERASER_WIDTH <= 480) {
         tft.drawFastVLine(current_x + ERASER_WIDTH - 1, clear_start_y, clear_height, COLOR_HOT_CHEST);
         tft.drawFastHLine(current_x, split_y, ERASER_WIDTH, COLOR_HOT_CHEST);
@@ -872,8 +872,8 @@ cursor_y += 5;
     }
 
     if (current_x <= 480 - ERASER_WIDTH || did_rescale) {
-        int text_x = current_x + 6; 
-        if (text_x > 480 - 40) text_x = 480 - 40; 
+        int text_x = current_x + 6;
+        if (text_x > 480 - 40) text_x = 480 - 40;
 
         tft.setFreeFont(&UbuntuMono_Regular8pt7b);
         tft.setTextDatum(TL_DATUM);
@@ -884,8 +884,8 @@ cursor_y += 5;
             tft.drawString("100%", text_x, chart_start_y + 4);
             int mid_y = chart_start_y + ((split_y - chart_start_y) / 2);
             tft.drawString("50%", text_x, mid_y - 6);
-            
-            if (currentRadioMode == RADIO_BLE || target_locked) tft.drawString("|=1m", text_x, split_y - 15); 
+
+            if (currentRadioMode == RADIO_BLE || target_locked) tft.drawString("|=1m", text_x, split_y - 15);
             else tft.drawString("|=2m", text_x, split_y - 15);
         }
 
@@ -898,7 +898,7 @@ cursor_y += 5;
             else if (absolute_max_traffic < 1073741824) snprintf(maxStr, sizeof(maxStr), "%luM", absolute_max_traffic / 1048576);
             else snprintf(maxStr, sizeof(maxStr), "%.1fG", (float)absolute_max_traffic / 1073741824.0);
         }
-        
+
         tft.drawString(maxStr, text_x, split_y + 4);
         tft.drawString("0", text_x, CHART_BOTTOM - 12);
     }

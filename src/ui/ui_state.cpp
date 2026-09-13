@@ -16,7 +16,7 @@ uint16_t colors[9] = {
   hex24to565(0xB75BE2), // [3] Purple
   hex24to565(0x87E370), // [4] Bright Green
   hex24to565(0xD1C9CA), // [5] Light Gray
-  hex24to565(0xDA815E), // [6] Rust/Orange  
+  hex24to565(0xDA815E), // [6] Rust/Orange
   hex24to565(0x889FD7), // [7] Periwinkle Blue
   TFT_DARKGREY          // [8] "Other" category (unchanged)
   //hex24to565(0xE07EB6), // [6] Pink

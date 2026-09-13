@@ -24,10 +24,10 @@ const char* getSubtypeStr(uint8_t subtype) {
 
 const char* getDirectionStr(uint8_t dir) {
     switch(dir) {
-        case 0: return "STA>STA"; 
-        case 1: return "STA>AP";   
-        case 2: return "AP>STA";   
-        case 3: return "WDS";       
+        case 0: return "STA>STA";
+        case 1: return "STA>AP";
+        case 2: return "AP>STA";
+        case 3: return "WDS";
         default: return "???";
     }
 }
@@ -42,7 +42,7 @@ const char* getProtocolStr(uint8_t proto) {
 
 void getIpString(uint8_t version, const uint8_t* ip_bytes, char* out_str, size_t max_len) {
     if (version == 4) {
-        snprintf(out_str, max_len, "%d.%d.%d.%d", 
+        snprintf(out_str, max_len, "%d.%d.%d.%d",
                  ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3]);
     } else if (version == 6) {
         // Now extracting the full 16-byte (128-bit) IPv6 address
@@ -50,7 +50,7 @@ void getIpString(uint8_t version, const uint8_t* ip_bytes, char* out_str, size_t
                  ip_bytes[0], ip_bytes[1], ip_bytes[2], ip_bytes[3],
                  ip_bytes[4], ip_bytes[5], ip_bytes[6], ip_bytes[7],
                  ip_bytes[8], ip_bytes[9], ip_bytes[10], ip_bytes[11],
-                 ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]); 
+                 ip_bytes[12], ip_bytes[13], ip_bytes[14], ip_bytes[15]);
     } else {
         snprintf(out_str, max_len, "None");
     }
@@ -58,7 +58,7 @@ void getIpString(uint8_t version, const uint8_t* ip_bytes, char* out_str, size_t
 
 uint32_t hash_flow(const uint8_t* data, size_t len, uint16_t sport, uint16_t dport) {
     uint32_t hash = 2166136261u;
-    
+
     // Hash the ports first
     hash ^= (sport & 0xFF); hash *= 16777619;
     hash ^= (sport >> 8);   hash *= 16777619;
@@ -74,7 +74,7 @@ uint32_t hash_flow(const uint8_t* data, size_t len, uint16_t sport, uint16_t dpo
 }
 
 uint8_t getBitrateMbps(wifi_promiscuous_pkt_t *pkt) {
-  if (pkt->rx_ctrl.sig_mode == 0) { 
+  if (pkt->rx_ctrl.sig_mode == 0) {
     // Legacy 802.11b/g
     switch(pkt->rx_ctrl.rate) {
       case 0x00: return 1;
@@ -91,7 +91,7 @@ uint8_t getBitrateMbps(wifi_promiscuous_pkt_t *pkt) {
       case 0x0C: return 54;
       default: return 0;
     }
-  } else { 
+  } else {
     // 802.11n (HT20 / HT40) MCS Index
     switch(pkt->rx_ctrl.mcs) {
       case 0: return 6;  // 6.5 Mbps
@@ -147,7 +147,7 @@ bool extract_printable_runs(const uint8_t* data, uint16_t len, char* out, size_t
     }
 
     out[out_idx] = '\0';
-    
+
     // First line of defense: Must have at least 12 printable characters total
     if (printable_count < 12) return false;
 
@@ -168,7 +168,7 @@ bool extract_printable_runs(const uint8_t* data, uint16_t len, char* out, size_t
     if (out_idx + tag_len + 1 < max_len) {
         memmove(out + tag_len + 1, out, out_idx + 1);
         memcpy(out, tag, tag_len);
-        out[tag_len] = ' '; 
+        out[tag_len] = ' ';
     }
 
     return true;
@@ -179,7 +179,7 @@ void translateProtocolStrings(char* text) {
     int len = strlen(text);
     // 0. Global Cleanup: Strip trailing "x V" or "xV" artifacts
     while (len > 0 && text[len-1] == ' ') { text[len-1] = '\0'; len--; } // Trim trailing spaces
-    
+
     if (len >= 3 && text[len-3] == 'x' && text[len-2] == ' ' && text[len-1] == 'V') {
         text[len-3] = '\0';
         len -= 3;
@@ -187,7 +187,7 @@ void translateProtocolStrings(char* text) {
         text[len-2] = '\0';
         len -= 2;
     }
-    
+
     while (len > 0 && text[len-1] == ' ') { text[len-1] = '\0'; len--; } // Trim again if exposed
 
     // ----------------------------------------------------
@@ -197,7 +197,7 @@ void translateProtocolStrings(char* text) {
     if (in_addr != NULL) {
         int o1, o2, o3, o4;
         char* ptr = text;
-        
+
         while (ptr < in_addr) {
             if (sscanf(ptr, "%d %d %d %d in-addr", &o4, &o3, &o2, &o1) == 4) {
                 snprintf(temp_buffer, MAX_LEAK_STR_LEN, "mDNS Reverse Query: %d.%d.%d.%d", o1, o2, o3, o4);
@@ -216,19 +216,19 @@ void translateProtocolStrings(char* text) {
         char nibbles[32];
         int n_idx = 0;
         char* ptr = ip6 - 1;
-        
+
         while (ptr >= text && n_idx < 32) {
             char c = *ptr;
             if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
-                nibbles[n_idx++] = c; 
+                nibbles[n_idx++] = c;
             }
             ptr--;
         }
-        
+
         if (n_idx == 32) {
             char ipv6_str[40];
             int out_idx = 0;
-            
+
             for (int i = 0; i < 32; i++) {
                 ipv6_str[out_idx++] = nibbles[i];
                 if (i % 4 == 3 && i != 31) {
@@ -236,11 +236,11 @@ void translateProtocolStrings(char* text) {
                 }
             }
             ipv6_str[out_idx] = '\0';
-            
+
             // ptr is now resting just before the first parsed hex character.
             // We stitch: [Prefix] + [Clean IPv6] + [".ip6" Suffix]
             int prefix_len = (ptr + 1) - text;
-            
+
             snprintf(temp_buffer, MAX_LEAK_STR_LEN, "%.*s%s.%s", prefix_len, text, ipv6_str, ip6);
             strncpy(text, temp_buffer, MAX_LEAK_STR_LEN);
             return;
@@ -255,7 +255,7 @@ void translateProtocolStrings(char* text) {
             const char* id;
             const char* name;
         };
-        
+
         static const CastApp castDictionary[] = {
     {"233637DE", "YouTube"},
     {"CA5E8412", "Netflix"},
@@ -272,27 +272,27 @@ void translateProtocolStrings(char* text) {
     {"85CDB22F", "Cast Streaming Audio"},
     {"B3DCF968", "Twitch"}
 };
-        
+
         int numApps = sizeof(castDictionary) / sizeof(castDictionary[0]);
-        
+
         for (int i = 0; i < numApps; i++) {
             // Use a pointer that updates so we can find multiple of the same ID
             char* match = strstr(text, castDictionary[i].id);
-            
+
             while (match != NULL) {
                 int prefix_len = match - text;
                 char* suffix = match + strlen(castDictionary[i].id);
-                
+
                 snprintf(temp_buffer, MAX_LEAK_STR_LEN, "%.*s[%s]%s", prefix_len, text, castDictionary[i].name, suffix);
                 strncpy(text, temp_buffer, MAX_LEAK_STR_LEN);
-                
+
                 // Re-evaluate on the newly modified string to check for duplicates
                 match = strstr(text, castDictionary[i].id);
             }
         }
         // Notice: The return; statement is completely removed.
-        
-        // Optional fallback: If it's a Cast packet but the App ID isn't in our dictionary, 
+
+        // Optional fallback: If it's a Cast packet but the App ID isn't in our dictionary,
         // we can still clean it up slightly to just say it's an unknown Cast App
         // snprintf(temp_buffer, MAX_LEAK_STR_LEN, "Google Cast: Unknown App");
         // strncpy(text, temp_buffer, MAX_LEAK_STR_LEN);
@@ -384,7 +384,7 @@ void format_reverse_lookups(char* text, size_t max_len) {
 
     // 2. VLA Removal: Use compile-time constant to enforce stack ceiling
     char temp_buffer[MAX_LEAK_STR_LEN];
-    
+
     // Ensure we don't write past our fixed buffer if max_len is somehow larger
     size_t safe_len = (max_len < MAX_LEAK_STR_LEN) ? max_len : MAX_LEAK_STR_LEN;
 
@@ -395,15 +395,15 @@ void format_reverse_lookups(char* text, size_t max_len) {
     if (in_addr != nullptr) {
         int o1, o2, o3, o4;
         char* ptr = text;
-        
+
         while (ptr < in_addr) {
             if (sscanf(ptr, "%d.%d.%d.%d.in-addr", &o4, &o3, &o2, &o1) == 4) {
                 // 3. Octet Range Validation: Protect against integer overflow/garbage
                 if (o1 >= 0 && o1 <= 255 && o2 >= 0 && o2 <= 255 &&
                     o3 >= 0 && o3 <= 255 && o4 >= 0 && o4 <= 255) {
-                    
+
                     int prefix_len = ptr - text;
-                    snprintf(temp_buffer, safe_len, "%.*sReverse Query: %d.%d.%d.%d", 
+                    snprintf(temp_buffer, safe_len, "%.*sReverse Query: %d.%d.%d.%d",
                              prefix_len, text, o1, o2, o3, o4);
                     strncpy(text, temp_buffer, safe_len);
                     return;
@@ -421,20 +421,20 @@ void format_reverse_lookups(char* text, size_t max_len) {
         char nibbles[32];
         int n_idx = 0;
         char* ptr = ip6 - 1;
-        
+
         // Walk backwards to collect exactly 32 hex nibbles
         while (ptr >= text && n_idx < 32) {
             char c = *ptr;
             if ((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f')) {
-                nibbles[n_idx++] = c; 
+                nibbles[n_idx++] = c;
             }
             ptr--;
         }
-        
+
         if (n_idx == 32) {
             char ipv6_str[40];
             int out_idx = 0;
-            
+
             // Reconstruct the IPv6 address with colons
             for (int i = 0; i < 32; i++) {
                 ipv6_str[out_idx++] = nibbles[i];
@@ -443,7 +443,7 @@ void format_reverse_lookups(char* text, size_t max_len) {
                 }
             }
             ipv6_str[out_idx] = '\0';
-            
+
             int prefix_len = (ptr + 1) - text;
             snprintf(temp_buffer, safe_len, "%.*s%s", prefix_len, text, ipv6_str);
             strncpy(text, temp_buffer, safe_len);
@@ -535,7 +535,7 @@ bool extract_xml_value(const char* p, uint16_t length, const char* tag_suffix, c
     size_t t_len = strlen(tag_suffix);
     if (length < t_len) return false;
 
-    const char* end = p + length; 
+    const char* end = p + length;
 
     for (int i = 0; i <= length - t_len; i++) {
         bool match = true;
@@ -545,21 +545,21 @@ bool extract_xml_value(const char* p, uint16_t length, const char* tag_suffix, c
                 break;
             }
         }
-        
+
         // Fully tightened heuristic: strictly requires the start of a tag or namespace
         if (match && (i == 0 || p[i-1] == '<' || p[i-1] == ':')) {
             const char* val_start = &p[i + t_len];
             const char* val_end = val_start;
-            
+
             while (val_end < end && *val_end != '<') {
                 val_end++;
             }
-            
+
             int copy_len = val_end - val_start;
-            
+
             // Explicit defensive check
             if (copy_len <= 0) continue;
-            
+
             copy_len = std::min(copy_len, (int)max_out - 1);
             memcpy(out_buf, val_start, copy_len);
             out_buf[copy_len] = '\0';
@@ -573,10 +573,10 @@ bool extract_json_val(const char* payload, uint16_t len, const char* key, char* 
     char qkey[32];
     snprintf(qkey, sizeof(qkey), "\"%s\"", key);
     int qlen = strlen(qkey);
-    
+
     const char* end = payload + len;
     const char* found = nullptr;
-    
+
     // Bounded search for the key (e.g., "displayname")
     for (const char* curr = payload; curr <= end - qlen; curr++) {
         if (memcmp(curr, qkey, qlen) == 0) {
@@ -584,30 +584,30 @@ bool extract_json_val(const char* payload, uint16_t len, const char* key, char* 
             break;
         }
     }
-    
+
     if (!found) return false;
-    
+
     const char* p = found + qlen;
     while (p < end && *p != ':') p++;
     if (p >= end) return false;
     p++; // skip ':'
-    
+
     while (p < end && (*p == ' ' || *p == '\t')) p++; // skip whitespace
     if (p >= end) return false;
-    
+
     int i = 0;
     bool in_quotes = (*p == '"');
     int bracket_depth = 0; // Tracks [ ] arrays so we don't break on inner commas
-    
+
     if (in_quotes) p++; // skip opening quote
-    
+
     while (p < end && i < (int)out_max - 1) {
         if (in_quotes) {
             if (*p == '"') break; // end of string
         } else {
             if (*p == '[') bracket_depth++;
             else if (*p == ']') bracket_depth--;
-            
+
             // Break on comma only if we aren't inside an array literal
             if (bracket_depth == 0 && (*p == ',' || *p == '}' || *p == '\r' || *p == '\n')) break;
         }

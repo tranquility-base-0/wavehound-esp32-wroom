@@ -24,10 +24,10 @@ void drawMenu() {
   tft.setTextSize(1);
 
   // HEADER
-  tft.setFreeFont(&UbuntuMono_Regular11pt7b); 
-  tft.setTextDatum(MC_DATUM); 
+  tft.setFreeFont(&UbuntuMono_Regular11pt7b);
+  tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE);
-  tft.drawString("DASHBOARD SETTINGS", 240, 40); 
+  tft.drawString("DASHBOARD SETTINGS", 240, 40);
 
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
 
@@ -43,13 +43,13 @@ void drawMenu() {
     if (sessionBleCount > 0) {
         foxhunt_available = true;
     }
-  } 
+  }
   // 2. NETWORKS (AP) MODE EVALUATION
   else if (currentRadioMode == RADIO_AP) {
       if (sessionApCount > 0) {
           foxhunt_available = true;
       }
-  } 
+  }
   // 3. WI-FI MODE EVALUATION (Isolated at the bottom)
   else if (currentRadioMode == RADIO_WIFI) {
       if (target_locked == true && sessionMacCount > 0) {
@@ -70,13 +70,13 @@ void drawMenu() {
       tft.drawRect(50, 90, 200, 40, TFT_DARKGREY);
       tft.setTextColor(TFT_DARKGREY);
       tft.drawString("FOXHUNT", 150, 110);
-      
+
       // Hint text
       tft.setFreeFont(&UbuntuMono_Regular9pt7b);
       tft.setTextColor(hex24to565(0x444444));
       tft.drawString("(no targets yet)", 150, 125);
   }
-  
+
   // ==========================================
   // PROBE REQUEST BUTTON (Right Column)
   // ==========================================
@@ -94,7 +94,7 @@ void drawMenu() {
     tft.fillRect(50, 190, 200, 40, TFT_BLACK);
     tft.drawRect(50, 190, 200, 40, TFT_WHITE);
     tft.setTextColor(TFT_WHITE);
-    
+
     if (currentRadioMode == RADIO_WIFI) {
         tft.drawString("SELECT AP", 150, 210);
     } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
@@ -129,18 +129,18 @@ void drawMenu() {
   // 1. Draw the filled background based on the current mode
   if (currentRadioMode == RADIO_WIFI) {
     tft.fillRect(300, 190, 150, 40, TFT_BLUE);
-  } 
+  }
   else if (currentRadioMode == RADIO_BLE) {
     tft.fillRect(300, 190, 150, 40, TFT_PURPLE);
-  } 
+  }
   else if (currentRadioMode == RADIO_AP) {
-    tft.fillRect(300, 190, 150, 40, TFT_DARKGREEN); 
+    tft.fillRect(300, 190, 150, 40, TFT_DARKGREEN);
   }
   else if (currentRadioMode == RADIO_CHANNELS) {
-    tft.fillRect(300, 190, 150, 40, TFT_ORANGE); 
+    tft.fillRect(300, 190, 150, 40, TFT_ORANGE);
   }
   else if (currentRadioMode == RADIO_PCAP) {
-    tft.fillRect(300, 190, 150, 40, TFT_MAROON); 
+    tft.fillRect(300, 190, 150, 40, TFT_MAROON);
   }
 
   // 2. Draw the universal white border
@@ -149,10 +149,10 @@ void drawMenu() {
   // 3. Draw the corresponding text label
   if (currentRadioMode == RADIO_WIFI) {
     tft.drawString("MODE: WI-FI", 375, 210);
-  } 
+  }
   else if (currentRadioMode == RADIO_BLE) {
     tft.drawString("MODE: BLE", 375, 210);
-  } 
+  }
   else if (currentRadioMode == RADIO_AP) {
     tft.drawString("MODE: NETWORKS", 375, 210);
   }
@@ -168,13 +168,13 @@ void drawMenu() {
   tft.drawRect(300, 240, 150, 40, TFT_WHITE);
   tft.setTextColor(TFT_WHITE);
   tft.drawString("EXIT", 375, 260);
-  
+
   // THE FIX: Reset datum to Top-Left for the rest of the UI ONLY at the very end!
-  tft.setTextDatum(TL_DATUM); 
+  tft.setTextDatum(TL_DATUM);
 }
 void drawApScanner() {
   tft.fillScreen(TFT_BLACK);
-  tft.setTextSize(1); 
+  tft.setTextSize(1);
 
   int n = WiFi.scanComplete();
   if (n < 0) {
@@ -198,7 +198,7 @@ void drawApScanner() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(TFT_WHITE);
   tft.fillRect(0, 0, 480, 30, TFT_BLUE);
-  
+
   // Build the dynamic header string using the 'n' variable
   char headerStr[64];
   snprintf(headerStr, sizeof(headerStr), "SELECT TARGET AP (%d)", n);
@@ -207,11 +207,11 @@ void drawApScanner() {
   tft.setFreeFont(&UbuntuMono_Regular11pt7b);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_GREEN);
-  tft.drawRect(0, 40, 480, 35, TFT_DARKGREY); 
+  tft.drawRect(0, 40, 480, 35, TFT_DARKGREY);
   tft.drawString("CH:ALL (Sniff Free Airspace)", 5, 50);
 
   tft.setTextColor(TFT_WHITE);
-  
+
   // ==========================================
   // LIST GENERATION
   // ==========================================
@@ -230,12 +230,12 @@ void drawApScanner() {
 
     int row = 0;
     for (int i = start_idx; i < end_idx; ++i) {
-      int y = 80 + (row * 35); 
+      int y = 80 + (row * 35);
 
       // 1. Get the raw BSSID bytes and the SSID string
       uint8_t* bssid = WiFi.BSSID(i);
       String raw_ssid = WiFi.SSID(i);
-      char tactical_ssid[26]; 
+      char tactical_ssid[26];
 
       // 2. Determine if this SSID is a duplicate in the airspace
       bool has_clone = false;
@@ -252,12 +252,12 @@ void drawApScanner() {
       if (raw_ssid.length() == 0) {
         snprintf(tactical_ssid, sizeof(tactical_ssid), "<HIDDEN> [%02X%02X]", bssid[4], bssid[5]);
       } else if (has_clone) {
-        char temp_ssid[16]; 
+        char temp_ssid[16];
         strncpy(temp_ssid, raw_ssid.c_str(), 15);
         temp_ssid[15] = '\0';
         snprintf(tactical_ssid, sizeof(tactical_ssid), "%s~%02X%02X", temp_ssid, bssid[4], bssid[5]);
       } else {
-        char temp_ssid[22]; 
+        char temp_ssid[22];
         strncpy(temp_ssid, raw_ssid.c_str(), 21);
         temp_ssid[21] = '\0';
         snprintf(tactical_ssid, sizeof(tactical_ssid), "%s", temp_ssid);
@@ -267,7 +267,7 @@ void drawApScanner() {
       float dist = calculateRfDistance(WiFi.RSSI(i), 0, RADIO_WIFI_24GHZ);
 
       // 5. SPLIT DRAWING LOGIC FOR PERFECT ALIGNMENT
-      
+
       // Build the Left String (Channel & SSID)
       char leftStr[60];
       snprintf(leftStr, sizeof(leftStr), "CH:%02d %s", WiFi.channel(i), tactical_ssid);
@@ -282,7 +282,7 @@ void drawApScanner() {
 
       // Paint Right Side (Flush Right at X=475)
       tft.setTextDatum(TR_DATUM);
-      tft.drawString(rightStr, 475, y + 10); 
+      tft.drawString(rightStr, 475, y + 10);
 
       tft.drawRect(0, y, 480, 35, TFT_DARKGREY);
       row++;
@@ -293,11 +293,11 @@ void drawApScanner() {
   // FOOTER & NAVIGATION (Synced to Y=294)
   // ==========================================
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
-  tft.setTextDatum(TL_DATUM); 
+  tft.setTextDatum(TL_DATUM);
 
   // THE FIX: Pushed down from 285 to perfectly match the Probe Tracker footer
   tft.drawLine(0, 294, 480, 294, TFT_WHITE);
-  
+
   tft.setTextColor(TFT_RED);
   tft.drawString("BACK", 215, 300);
 
@@ -307,7 +307,7 @@ void drawApScanner() {
     if (ap_current_page > 0) {
       tft.drawString("<- PREV", 20, 300);
     }
-    
+
     if (((ap_current_page + 1) * APS_PER_PAGE) < n) {
       tft.drawString("NEXT ->", 360, 300);
     }
@@ -322,7 +322,7 @@ void drawDeviceList() {
   // 1. DEVICE COUNTING
   // ==========================================
   int total_devices = 0;
-  
+
   if (currentRadioMode == RADIO_WIFI) total_devices = sessionMacCount;
   else if (currentRadioMode == RADIO_BLE) total_devices = sessionBleCount;
   else if (currentRadioMode == RADIO_AP) total_devices = sessionApCount;
@@ -341,7 +341,7 @@ void drawDeviceList() {
   bool has_next_page = false;
 
   // DECLARE IN OUTER SCOPE SO RENDERER CAN SEE THEM!
-  int valid_indices[MAX_LEAK_SLOTS] = {0}; 
+  int valid_indices[MAX_LEAK_SLOTS] = {0};
   int valid_count = 0;
 
   if (currentRadioMode == RADIO_PCAP) {
@@ -369,16 +369,16 @@ void drawDeviceList() {
           int n_lines = (pLen > 0) ? ((pLen - 1) / maxChars) + 1 : 1;
           if (n_lines > 9) n_lines = 9;
 
-          int item_h = 42 + (n_lines * 14) + 5; 
+          int item_h = 42 + (n_lines * 14) + 5;
 
-          if (test_y + item_h > 290) { 
+          if (test_y + item_h > 290) {
               if (total_pages < MAX_LEAK_SLOTS - 1) { // Prevents out-of-bounds on page_starts
                   total_pages++;
-                  page_starts[total_pages] = v; 
+                  page_starts[total_pages] = v;
               }
-              test_y = 32 + item_h; 
+              test_y = 32 + item_h;
           } else {
-              test_y += item_h; 
+              test_y += item_h;
           }
       }
 
@@ -386,7 +386,7 @@ void drawDeviceList() {
       start_idx = page_starts[device_current_page];
       end_idx = (device_current_page < total_pages) ? page_starts[device_current_page + 1] : valid_count;
       has_next_page = (device_current_page < total_pages);
-      
+
   } else {
       // --- FIXED GRID PACKING (WIFI/AP/BLE/CHANNELS) ---
       int items_per_page = 7;
@@ -405,9 +405,9 @@ void drawDeviceList() {
   // ==========================================
   tft.setTextColor(TFT_WHITE);
   tft.setFreeFont(&UbuntuMono_B9pt7b);
-  
+
   if (is_selecting_target) {
-    tft.fillRect(0, 0, 480, 24, TFT_RED); 
+    tft.fillRect(0, 0, 480, 24, TFT_RED);
     char huntStr[64];
     const char* modeName = (currentRadioMode == RADIO_WIFI) ? "WI-FI" : (currentRadioMode == RADIO_BLE) ? "BLE" : "NETWORKS";
     snprintf(huntStr, sizeof(huntStr), " FOXHUNT TARGET (%s)", modeName);
@@ -415,17 +415,17 @@ void drawDeviceList() {
   } else {
     uint16_t headerColor = TFT_BLUE;
     const char* modeStr = "WI-FI";
-    
-    if (currentRadioMode == RADIO_BLE) { headerColor = TFT_PURPLE; modeStr = "BLE"; } 
-    else if (currentRadioMode == RADIO_AP) { headerColor = TFT_DARKGREEN; modeStr = "NETWORKS"; } 
-    else if (currentRadioMode == RADIO_CHANNELS) { headerColor = TFT_ORANGE; modeStr = "CHANNELS"; } 
+
+    if (currentRadioMode == RADIO_BLE) { headerColor = TFT_PURPLE; modeStr = "BLE"; }
+    else if (currentRadioMode == RADIO_AP) { headerColor = TFT_DARKGREEN; modeStr = "NETWORKS"; }
+    else if (currentRadioMode == RADIO_CHANNELS) { headerColor = TFT_ORANGE; modeStr = "CHANNELS"; }
     else if (currentRadioMode == RADIO_PCAP) { headerColor = TFT_MAROON; modeStr = "PCAP LEAKS"; }
-    
+
     tft.fillRect(0, 0, 480, 24, headerColor);
     char headerStr[64];
     snprintf(headerStr, sizeof(headerStr), " SNIFFED %s (%d)", modeStr, total_devices);
-    tft.drawString(headerStr, 5, 5); 
-  } 
+    tft.drawString(headerStr, 5, 5);
+  }
 
   // ==========================================
   // 4. DYNAMIC SORT BUTTONS
@@ -433,7 +433,7 @@ void drawDeviceList() {
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
   char metricStr[32] = "SORT:ERR";
   uint16_t metricColor = TFT_RED;
-  
+
   if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP) {
     if (currentSortMode == SORT_TOTAL) { strcpy(metricStr, "SORT:TOTAL"); metricColor = TFT_WHITE; }
     else if (currentSortMode == SORT_TX) { strcpy(metricStr, "SORT:TX"); metricColor = TFT_CYAN; }
@@ -442,7 +442,7 @@ void drawDeviceList() {
     else if (currentSortMode == SORT_CV) { strcpy(metricStr, "SORT:CV%"); metricColor = TFT_ORANGE; }
     else if (currentSortMode == SORT_DIST) { strcpy(metricStr, "SORT:DIST"); metricColor = TFT_GREEN; }
     else if (currentSortMode == SORT_AGE) { strcpy(metricStr, "SORT:AGE"); metricColor = TFT_BLUE; }
-  } 
+  }
   else if (currentRadioMode == RADIO_CHANNELS) {
     if (currentSortMode == SORT_TOTAL) { strcpy(metricStr, "SORT:TOTAL"); metricColor = TFT_WHITE; }
     else if (currentSortMode == SORT_TX) { strcpy(metricStr, "SORT:DN"); metricColor = TFT_CYAN; }
@@ -450,7 +450,7 @@ void drawDeviceList() {
     else if (currentSortMode == SORT_AVG) { strcpy(metricStr, "SORT:AVG"); metricColor = TFT_YELLOW; }
     else if (currentSortMode == SORT_CV) { strcpy(metricStr, "SORT:CV%"); metricColor = TFT_ORANGE; }
     else if (currentSortMode == SORT_DIST) { strcpy(metricStr, "SORT:PWR"); metricColor = TFT_GREEN; }
-  } 
+  }
   else if (currentRadioMode == RADIO_BLE) {
     if (currentBleSortMode == SORT_BLE_HITS) { strcpy(metricStr, "SORT:HITS"); metricColor = TFT_WHITE; }
     else if (currentBleSortMode == SORT_BLE_DIST) { strcpy(metricStr, "SORT:DIST"); metricColor = TFT_GREEN; }
@@ -462,14 +462,14 @@ void drawDeviceList() {
     else if (currentLeakSort == SORT_LEAK_HITS) { strcpy(metricStr, "SORT:HITS"); metricColor = TFT_WHITE; }
   }
 
-  tft.fillRoundRect(275, 2, 130, 20, 3, TFT_BLACK); 
+  tft.fillRoundRect(275, 2, 130, 20, 3, TFT_BLACK);
   tft.drawRoundRect(275, 2, 130, 20, 3, TFT_WHITE);
   tft.setTextColor(metricColor);
   tft.drawString(metricStr, 282, 4);
 
-  tft.fillRoundRect(410, 2, 65, 20, 3, TFT_BLACK); 
+  tft.fillRoundRect(410, 2, 65, 20, 3, TFT_BLACK);
   tft.drawRoundRect(410, 2, 65, 20, 3, TFT_WHITE);
-  
+
   if (sort_descending) {
     tft.setTextColor(TFT_WHITE);
     tft.drawString("DESC", 423, 4);
@@ -477,7 +477,7 @@ void drawDeviceList() {
     tft.setTextColor(TFT_GREEN);
     tft.drawString("ASC", 427, 4);
   }
-  
+
   tft.setTextColor(TFT_WHITE);
 
   if (total_devices == 0) {
@@ -491,30 +491,30 @@ void drawDeviceList() {
         tft.setTextColor(TFT_GREEN);
         if (currentRadioMode == RADIO_WIFI) {
           tft.setFreeFont(&UbuntuMono_B9pt7b);
-          tft.drawString("     VENDOR                 MAC            RSSI TOTAL", 5, 26); 
-          tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
+          tft.drawString("     VENDOR                 MAC            RSSI TOTAL", 5, 26);
+          tft.setFreeFont(&UbuntuMono_Regular9pt7b);
           tft.drawString("Per(s) FIRST | LAST DIST Mbps  AVG    CV%    TX | RX", 5, 41);
-        } 
+        }
         else if (currentRadioMode == RADIO_AP) {
           tft.setFreeFont(&UbuntuMono_B9pt7b);
-          tft.drawString("     SSID                 BSSID         CC RSSI TOTAL", 5, 26);       
-          tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
+          tft.drawString("     SSID                 BSSID         CC RSSI TOTAL", 5, 26);
+          tft.setFreeFont(&UbuntuMono_Regular9pt7b);
           tft.drawString("    FIRST | LAST  DIST CH RATE  AVG  CV%    TX | RX", 5, 41);
         }
         else if (currentRadioMode == RADIO_CHANNELS) {
           tft.setFreeFont(&UbuntuMono_B9pt7b);
-          tft.drawString("     CHANNEL           PWR(AVG dBm|STD)         TOTAL", 5, 26);       
-          tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
+          tft.drawString("     CHANNEL           PWR(AVG dBm|STD)         TOTAL", 5, 26);
+          tft.setFreeFont(&UbuntuMono_Regular9pt7b);
           tft.drawString("    FIRST | LAST         STATE   AVG  CV%    DN | UP", 5, 41);
         }
         else {
           tft.setFreeFont(&UbuntuMono_B9pt7b);
-          tft.drawString("    NAME                FIRST|LAST    RSSI  DIST  HITS", 5, 26);       
-          tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
+          tft.drawString("    NAME                FIRST|LAST    RSSI  DIST  HITS", 5, 26);
+          tft.setFreeFont(&UbuntuMono_Regular9pt7b);
           tft.drawString("MAC ADDRESS        VENDOR/DIAGNOSTIC PAYLOAD", 5, 41);
         }
-        tft.setTextColor(TFT_WHITE); 
-        tft.drawLine(0, 57, 480, 57, TFT_WHITE); 
+        tft.setTextColor(TFT_WHITE);
+        tft.drawLine(0, 57, 480, 57, TFT_WHITE);
     }
 
     // ==========================================
@@ -526,10 +526,10 @@ void drawDeviceList() {
     int dyn_y = base_y; // Dynamic tracker exclusively for PCAP mode
 
     for (int i = start_idx; i < end_idx; i++) {
-      
+
       // Select the correct Y coordinate based on the mode
-      int y = (currentRadioMode == RADIO_PCAP) ? dyn_y : (base_y + (row * y_spacing)); 
-      
+      int y = (currentRadioMode == RADIO_PCAP) ? dyn_y : (base_y + (row * y_spacing));
+
       if (currentRadioMode == RADIO_WIFI) {
         // ... [WIFI MODE LOGIC REMAINS UNCHANGED] ...
         char line1[90]; char line2[90];
@@ -540,7 +540,7 @@ void drawDeviceList() {
                  sessionData[i].mac[0], sessionData[i].mac[1], sessionData[i].mac[2],
                  sessionData[i].mac[3], sessionData[i].mac[4], sessionData[i].mac[5]);
 
-        char safeVendor[20]; 
+        char safeVendor[20];
         snprintf(safeVendor, sizeof(safeVendor), "%-18.18s", sessionData[i].vendor);
 
         double mean = 0.0; double cv_percent = 0.0;
@@ -548,7 +548,7 @@ void drawDeviceList() {
             mean = (double)sessionData[i].sum_bytes / (double)sessionData[i].packets;
             double avg_sq_sum = (double)sessionData[i].sum_sq_bytes / (double)sessionData[i].packets;
             double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0; 
+            if (variance < 0) variance = 0;
             double std_dev = sqrt(variance);
             if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
@@ -556,7 +556,7 @@ void drawDeviceList() {
         char firstSeenStr[8], lastSeenStr[8], ageCombo[16];
         getAgeString(sessionData[i].first_seen, firstSeenStr, sizeof(firstSeenStr));
         getAgeString(sessionData[i].last_seen, lastSeenStr, sizeof(lastSeenStr));
-        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr); 
+        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
         uint32_t total_bytes = sessionData[i].tx_bytes + sessionData[i].rx_bytes;
         char totStr[10];
@@ -565,7 +565,7 @@ void drawDeviceList() {
         char txStr[6], rxStr[6], trafficCombo[12];
         formatShortUnit(sessionData[i].tx_bytes, txStr, sizeof(txStr));
         formatShortUnit(sessionData[i].rx_bytes, rxStr, sizeof(rxStr));
-        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr); 
+        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr);
 
         char avgStr[6];
         formatShortUnit((uint32_t)mean, avgStr, sizeof(avgStr));
@@ -574,14 +574,14 @@ void drawDeviceList() {
         if (sessionData[i].packets > 1) {
             unsigned long duration_ms = sessionData[i].last_seen - sessionData[i].first_seen;
             keep_alive_s = (duration_ms / sessionData[i].packets) / 1000;
-            if (keep_alive_s > 99) keep_alive_s = 99; 
+            if (keep_alive_s > 99) keep_alive_s = 99;
         }
 
-        snprintf(line1, sizeof(line1), "%3d. %-18.18s %17s %4d %-5.5s", 
+        snprintf(line1, sizeof(line1), "%3d. %-18.18s %17s %4d %-5.5s",
                  (i + 1), safeVendor, macStr, sessionData[i].rssi, totStr);
 
-        snprintf(line2, sizeof(line2), "  %02d  %13s %4.0fm %3d  %-5.5s %4.0f%%   %9s", 
-                 keep_alive_s, ageCombo, sessionData[i].smoothedDistance, sessionData[i].rate, 
+        snprintf(line2, sizeof(line2), "  %02d  %13s %4.0fm %3d  %-5.5s %4.0f%%   %9s",
+                 keep_alive_s, ageCombo, sessionData[i].smoothedDistance, sessionData[i].rate,
                  avgStr, cv_percent, trafficCombo);
 
         tft.setFreeFont(&UbuntuMono_B9pt7b);
@@ -589,19 +589,19 @@ void drawDeviceList() {
         tft.setTextColor(TFT_LIGHTGREY);
         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
         tft.drawString(line2, 5, y + 15);
-        tft.setTextColor(TFT_WHITE);      
-        
+        tft.setTextColor(TFT_WHITE);
+
       } else if (currentRadioMode == RADIO_BLE) {
         // ... [BLE MODE LOGIC REMAINS UNCHANGED] ...
-        char line1[90]; 
+        char line1[90];
         char safeName[20];
-        
+
         snprintf(safeName, sizeof(safeName), "%-18.18s", sessionBleData[i].name);
 
         char firstSeenStr[8], lastSeenStr[8], ageCombo[16];
         getAgeString(sessionBleData[i].firstSeen, firstSeenStr, sizeof(firstSeenStr));
         getAgeString(sessionBleData[i].lastSeen, lastSeenStr, sizeof(lastSeenStr));
-        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr); 
+        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
         const char* trackerStr = "";
         switch (sessionBleData[i].trackerType) {
@@ -617,18 +617,18 @@ void drawDeviceList() {
 
         const char* appStr = resolveBleAppearance(sessionBleData[i].appearanceId);
         const char* srvStr = resolveBleServiceUuid(sessionBleData[i].serviceId);
-        
-        char tagStr[64] = {0}; 
-        
+
+        char tagStr[64] = {0};
+
         if (strlen(trackerStr) > 0 && sessionBleData[i].namePriority != 1) {
             strlcpy(tagStr, trackerStr, sizeof(tagStr));
         }
-        
+
         if (appStr != nullptr && appStr[0] != '\0') {
             if (tagStr[0] != '\0') strlcat(tagStr, " | ", sizeof(tagStr));
             strlcat(tagStr, appStr, sizeof(tagStr));
         }
-        
+
         if (srvStr != nullptr && srvStr[0] != '\0') {
             if (tagStr[0] != '\0') strlcat(tagStr, " | ", sizeof(tagStr));
             strlcat(tagStr, srvStr, sizeof(tagStr));
@@ -639,22 +639,22 @@ void drawDeviceList() {
                 if (sessionBleData[i].trackerType == TRACKER_APPLE_IBEACON) {
                     snprintf(tagStr, sizeof(tagStr), "iBeacon | %s", sessionBleData[i].payload);
                 } else {
-                    strlcpy(tagStr, sessionBleData[i].payload, sizeof(tagStr)); 
+                    strlcpy(tagStr, sessionBleData[i].payload, sizeof(tagStr));
                 }
             } else {
-                strlcpy(tagStr, "No Data", sizeof(tagStr)); 
+                strlcpy(tagStr, "No Data", sizeof(tagStr));
             }
         }
-        
-        cleanOsintString(tagStr); 
+
+        cleanOsintString(tagStr);
 
         char macStr[18];
-        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
-                 sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2], 
+        snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2],
                  sessionBleData[i].mac[3], sessionBleData[i].mac[4], sessionBleData[i].mac[5]);
 
-        snprintf(line1, sizeof(line1), "%2d.%-18.18s %13s %4d %4.0fm %5u", 
-                 (i + 1), safeName, ageCombo, sessionBleData[i].rssi, 
+        snprintf(line1, sizeof(line1), "%2d.%-18.18s %13s %4d %4.0fm %5u",
+                 (i + 1), safeName, ageCombo, sessionBleData[i].rssi,
                  sessionBleData[i].smoothedDistance, sessionBleData[i].hits);
 
         char line2[90];
@@ -703,7 +703,7 @@ void drawDeviceList() {
             mean = (double)sessionApData[i].sum_bytes / (double)sessionApData[i].packets;
             double avg_sq_sum = (double)sessionApData[i].sum_sq_bytes / (double)sessionApData[i].packets;
             double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0; 
+            if (variance < 0) variance = 0;
             double std_dev = sqrt(variance);
             if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
@@ -714,7 +714,7 @@ void drawDeviceList() {
         char firstSeenStr[8], lastSeenStr[8], ageCombo[16];
         getAgeString(sessionApData[i].first_seen, firstSeenStr, sizeof(firstSeenStr));
         getAgeString(sessionApData[i].last_seen, lastSeenStr, sizeof(lastSeenStr));
-        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr); 
+        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
         uint32_t total_bytes = sessionApData[i].tx_bytes + sessionApData[i].rx_bytes;
         char totStr[10];
@@ -723,19 +723,19 @@ void drawDeviceList() {
         char txStr[6], rxStr[6], trafficCombo[12];
         formatShortUnit(sessionApData[i].tx_bytes, txStr, sizeof(txStr));
         formatShortUnit(sessionApData[i].rx_bytes, rxStr, sizeof(rxStr));
-        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr); 
-        
+        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr);
+
         char safeCountry[3] = "--";
         if (sessionApData[i].country[0] != '\0') {
             safeCountry[0] = sessionApData[i].country[0];
             safeCountry[1] = sessionApData[i].country[1];
         }
 
-        snprintf(line1, sizeof(line1), "%3d. %-18.18s %17s %2s %4d %-5.5s", 
+        snprintf(line1, sizeof(line1), "%3d. %-18.18s %17s %2s %4d %-5.5s",
                  (i + 1), safeSsid, bssidStr, safeCountry, sessionApData[i].rssi, totStr);
 
-        snprintf(line2, sizeof(line2), "    %13s %3.0fm %02d %3uM %-4.4s %3.0f%%   %9s", 
-                 ageCombo, sessionApData[i].smoothedDistance, sessionApData[i].channel, 
+        snprintf(line2, sizeof(line2), "    %13s %3.0fm %02d %3uM %-4.4s %3.0f%%   %9s",
+                 ageCombo, sessionApData[i].smoothedDistance, sessionApData[i].channel,
                  sessionApData[i].max_rate, avgStr, cv_percent, trafficCombo);
 
         tft.setFreeFont(&UbuntuMono_B9pt7b);
@@ -743,7 +743,7 @@ void drawDeviceList() {
         tft.setTextColor(TFT_LIGHTGREY);
         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
         tft.drawString(line2, 5, y + 15);
-        tft.setTextColor(TFT_WHITE); 
+        tft.setTextColor(TFT_WHITE);
       }
       else if (currentRadioMode == RADIO_CHANNELS) {
         // ... [CHANNELS MODE LOGIC REMAINS UNCHANGED] ...
@@ -756,24 +756,24 @@ void drawDeviceList() {
             mean = (double)sessionChannelData[i].sum_bytes / (double)sessionChannelData[i].packets;
             double avg_sq_sum = (double)sessionChannelData[i].sum_sq_bytes / (double)sessionChannelData[i].packets;
             double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0; 
+            if (variance < 0) variance = 0;
             double std_dev = sqrt(variance);
             if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
 
         float avg_rssi = sessionChannelData[i].avg_rssi;
         double std_dev_rssi = sqrt(sessionChannelData[i].ema_variance);
-        
+
         float rho = 0.0;
-        if (sessionChannelData[i].ema_variance > 0.01) { 
+        if (sessionChannelData[i].ema_variance > 0.01) {
             rho = sessionChannelData[i].ema_cov / sessionChannelData[i].ema_variance;
         }
 
         char stateStr[10];
-        if (sessionChannelData[i].packets < 5) strcpy(stateStr, "CALC.."); 
-        else if (rho > 0.6) strcpy(stateStr, "DRIFT");   
-        else if (rho > 0.2) strcpy(stateStr, "ACTIVE");  
-        else strcpy(stateStr, "STATIC");                 
+        if (sessionChannelData[i].packets < 5) strcpy(stateStr, "CALC..");
+        else if (rho > 0.6) strcpy(stateStr, "DRIFT");
+        else if (rho > 0.2) strcpy(stateStr, "ACTIVE");
+        else strcpy(stateStr, "STATIC");
 
         char avgStr[6];
         formatShortUnit((uint32_t)mean, avgStr, sizeof(avgStr));
@@ -781,25 +781,25 @@ void drawDeviceList() {
         char firstSeenStr[8], lastSeenStr[8], ageCombo[16];
         getAgeString(sessionChannelData[i].first_seen, firstSeenStr, sizeof(firstSeenStr));
         getAgeString(sessionChannelData[i].last_seen, lastSeenStr, sizeof(lastSeenStr));
-        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr); 
+        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
         uint32_t total_bytes = sessionChannelData[i].tx_bytes + sessionChannelData[i].rx_bytes;
         char totStr[10];
         formatTotalUnit(total_bytes, totStr, sizeof(totStr));
 
         char txStr[6], rxStr[6], trafficCombo[12];
-        formatShortUnit(sessionChannelData[i].tx_bytes, txStr, sizeof(txStr)); 
-        formatShortUnit(sessionChannelData[i].rx_bytes, rxStr, sizeof(rxStr)); 
-        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr); 
+        formatShortUnit(sessionChannelData[i].tx_bytes, txStr, sizeof(txStr));
+        formatShortUnit(sessionChannelData[i].rx_bytes, rxStr, sizeof(rxStr));
+        snprintf(trafficCombo, sizeof(trafficCombo), "%s|%s", txStr, rxStr);
 
         char pwrStr[16];
         if (sessionChannelData[i].packets == 0) strcpy(pwrStr, "N/A");
         else snprintf(pwrStr, sizeof(pwrStr), "%3.0f|~%-2.0f", avg_rssi, std_dev_rssi);
 
-        snprintf(line1, sizeof(line1), "%3d. CHANNEL %02d %14s %-11.11s   %-5.5s", 
+        snprintf(line1, sizeof(line1), "%3d. CHANNEL %02d %14s %-11.11s   %-5.5s",
                  (i + 1), sessionChannelData[i].channel, "", pwrStr, totStr);
 
-        snprintf(line2, sizeof(line2), "    %13s %5s %-7.7s %-4.4s %3.0f%%   %9s", 
+        snprintf(line2, sizeof(line2), "    %13s %5s %-7.7s %-4.4s %3.0f%%   %9s",
                  ageCombo, "", stateStr, avgStr, cv_percent, trafficCombo);
 
         tft.setFreeFont(&UbuntuMono_B9pt7b);
@@ -807,7 +807,7 @@ void drawDeviceList() {
         tft.setTextColor(TFT_LIGHTGREY);
         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
         tft.drawString(line2, 5, y + 15);
-        tft.setTextColor(TFT_WHITE); 
+        tft.setTextColor(TFT_WHITE);
       }
       else if (currentRadioMode == RADIO_PCAP) {
         // Map our logical loop variable 'i' back to the real array index!
@@ -822,18 +822,18 @@ void drawDeviceList() {
         char firstSeenStr[8], lastSeenStr[8], ageCombo[18];
         getAgeString(leakHistory[real_idx].first_seen, firstSeenStr, sizeof(firstSeenStr));
         getAgeString(lk.meta.timestamp, lastSeenStr, sizeof(lastSeenStr));
-        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr); 
+        snprintf(ageCombo, sizeof(ageCombo), "%s|%s", firstSeenStr, lastSeenStr);
 
         char safeSsid[13] = "Unknown";
         for (int ap = 0; ap < MAX_BSSID_CACHE; ap++) {
-            if (bssidCache[ap].last_seen == 0) continue; 
+            if (bssidCache[ap].last_seen == 0) continue;
             if (memcmp(lk.meta.bssid, bssidCache[ap].bssid, 6) == 0) {
                 strncpy(safeSsid, bssidCache[ap].ssid, 12);
                 safeSsid[12] = '\0';
                 break;
             }
         }
-        
+
         char srcVend[9], dstVend[9];
         strncpy(srcVend, leakHistory[real_idx].src_vendor, 8); srcVend[8] = '\0';
         strncpy(dstVend, leakHistory[real_idx].dst_vendor, 8); dstVend[8] = '\0';
@@ -846,7 +846,7 @@ void drawDeviceList() {
         uint16_t fLen = lk.meta.frame_length;
         if (fLen < 1000) snprintf(lenStr, sizeof(lenStr), "%dB", fLen);
         else snprintf(lenStr, sizeof(lenStr), "%dK", fLen / 1000);
-        
+
         char srcIpRaw[40] = {0}, dstIpRaw[40] = {0};
 getIpString(lk.meta.ip_version, lk.meta.src_ip, srcIpRaw, sizeof(srcIpRaw));
 getIpString(lk.meta.ip_version, lk.meta.dst_ip, dstIpRaw, sizeof(dstIpRaw));
@@ -860,7 +860,7 @@ if (lk.meta.ip_version == 6) {
     strncpy(dstIpStr, dstIpRaw, sizeof(dstIpStr) - 1);
 }
 
-        snprintf(line1, sizeof(line1), "[x%d]%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d", 
+        snprintf(line1, sizeof(line1), "[x%d]%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d",
                  leakHistory[real_idx].hitCount,
                  lk.meta.src_mac[0], lk.meta.src_mac[1], lk.meta.src_mac[2],
                  lk.meta.src_mac[3], lk.meta.src_mac[4], lk.meta.src_mac[5], srcVend,
@@ -871,24 +871,24 @@ if (lk.meta.ip_version == 6) {
         if (lk.meta.protocol == 6 || lk.meta.protocol == 17) {
             snprintf(portStr, sizeof(portStr), "|%d>%d", lk.meta.src_port, lk.meta.dst_port);
         }
-        snprintf(line2, sizeof(line2), "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s", 
+        snprintf(line2, sizeof(line2), "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s",
                  lk.meta.bssid[0], lk.meta.bssid[1], lk.meta.bssid[2],
                  lk.meta.bssid[3], lk.meta.bssid[4], lk.meta.bssid[5],
-                 safeSsid, getDirectionStr(lk.meta.direction), 
+                 safeSsid, getDirectionStr(lk.meta.direction),
                  getSubtypeStr(lk.meta.frame_subtype),
                  getProtocolStr(lk.meta.protocol), portStr);
 
         snprintf(line3, sizeof(line3), "%s>%s|%s", srcIpStr, dstIpStr, ageCombo);
 
         // --- SAFE PAYLOAD SLICING (Explicit memcpy & Clamp) ---
-        int pLen = lk.retained_len; 
+        int pLen = lk.retained_len;
         if (pLen > MAX_LEAK_STR_LEN - 1) {
             pLen = MAX_LEAK_STR_LEN - 1; // Defensive boundary clamp
         }
-        
+
         char safePayload[MAX_LEAK_STR_LEN + 1] = {0};
         size_t copyLen = pLen;
-        
+
         memcpy(safePayload, lk.text, copyLen);
         safePayload[copyLen] = '\0'; // Guarantee NUL termination
 
@@ -896,7 +896,7 @@ if (lk.meta.ip_version == 6) {
         for (int pt = 0; pt < pLen; pt++) {
             if (safePayload[pt] < 32 || safePayload[pt] > 126) safePayload[pt] = '.';
         }
-        
+
         // --- DYNAMIC PAYLOAD SLICING (Loop-Based up to 9 lines) ---
         const int maxChars = 58;
         const int maxLinesAllowed = 9;
@@ -909,10 +909,10 @@ if (lk.meta.ip_version == 6) {
                 if (line == 0) n_lines = 1; // Guarantee at least 1 line is counted
                 break;
             }
-            
+
             n_lines = line + 1;
             int remaining = pLen - offset;
-            
+
             if (remaining <= maxChars) {
                 strncpy(pLines[line], safePayload + offset, remaining);
             } else {
@@ -935,9 +935,9 @@ if (lk.meta.ip_version == 6) {
         tft.drawString(line2, 5, y + 14);
         tft.setTextColor(TFT_ORANGE);
         tft.drawString(line3, 5, y + 28);
-        
+
         tft.setTextColor(TFT_GREEN);
-        
+
         // Dynamically print exactly as many lines as this specific packet needs
         for (int l = 0; l < n_lines; l++) {
             tft.drawString(pLines[l], 5, y + 42 + (l * 14));
@@ -945,8 +945,8 @@ if (lk.meta.ip_version == 6) {
 
         int current_item_h = 42 + (n_lines * 14);
         tft.drawLine(0, y + current_item_h + 2, 480, y + current_item_h + 2, COLOR_HOT_CHEST);
-        
-        dyn_y += current_item_h + 5; 
+
+        dyn_y += current_item_h + 5;
         tft.setTextColor(TFT_WHITE);
       }          // closes RADIO_PCAP branch
       row++;     // <-- also missing, see note below
@@ -956,16 +956,16 @@ if (lk.meta.ip_version == 6) {
   // ==========================================
   // 7. SAFE NAVIGATION FOOTER
   // ==========================================
-  tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
-  tft.drawLine(0, 294, 480, 294, TFT_WHITE); 
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  tft.drawLine(0, 294, 480, 294, TFT_WHITE);
 
   if (device_current_page > 0 && total_devices > 0) {
     tft.setTextColor(TFT_WHITE);
     tft.drawString("<- PREV", 20, 300);
   }
-  
+
   tft.setTextColor(TFT_RED);
-  tft.drawString("BACK", 215, 300); 
+  tft.drawString("BACK", 215, 300);
 
   if (has_next_page) {
     tft.setTextColor(TFT_WHITE);
@@ -986,7 +986,7 @@ void drawProbeTracker() {
     for (int b = 0; b < 6; b++) {
       if (probeList[i].mac[b] != 0) {
         active_probes++;
-        break; 
+        break;
       }
     }
   }
@@ -995,12 +995,12 @@ void drawProbeTracker() {
   tft.setFreeFont(&UbuntuMono_B9pt7b);
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE);
-  uint16_t osintHeaderColor = hex24to565(0x4A148C); 
+  uint16_t osintHeaderColor = hex24to565(0x4A148C);
   tft.fillRect(0, 0, 480, 24, osintHeaderColor);
-  
+
   char headerStr[64];
   snprintf(headerStr, sizeof(headerStr), "PHYSICAL TARGETS (%d)", active_probes);
-  tft.drawString(headerStr, 0, 5); 
+  tft.drawString(headerStr, 0, 5);
 
   // --- INJECT SORT UI BUTTONS ---
   char metricStr[32];
@@ -1011,14 +1011,14 @@ void drawProbeTracker() {
   else if (currentProbeSortMode == PROBE_SORT_SSIDS) strcpy(metricStr, "SORT:#SSIDs");
   else if (currentProbeSortMode == PROBE_SORT_AGE) strcpy(metricStr, "SORT:AGE");
 
-  tft.fillRoundRect(275, 2, 130, 20, 3, TFT_BLACK); 
+  tft.fillRoundRect(275, 2, 130, 20, 3, TFT_BLACK);
   tft.drawRoundRect(275, 2, 130, 20, 3, TFT_WHITE);
   tft.setTextColor(metricColor);
   tft.drawString(metricStr, 282, 4);
 
-  tft.fillRoundRect(410, 2, 65, 20, 3, TFT_BLACK); 
+  tft.fillRoundRect(410, 2, 65, 20, 3, TFT_BLACK);
   tft.drawRoundRect(410, 2, 65, 20, 3, TFT_WHITE);
-  
+
   if (probe_sort_descending) {
     tft.setTextColor(TFT_WHITE);
     tft.drawString("DESC", 423, 4);
@@ -1026,17 +1026,17 @@ void drawProbeTracker() {
     tft.setTextColor(TFT_GREEN);
     tft.drawString("ASC", 427, 4);
   }
-  
+
   // ==========================================
   // 2. DUAL-LINE COLUMN HEADERS
   // ==========================================
   tft.setTextColor(TFT_GREEN);
   tft.setFreeFont(&UbuntuMono_B9pt7b);
   // --- UPDATED: Realigned spacing and injected #MAC column ---
-  tft.drawString("ID VENDOR        FIRST|LAST   RSSI DIST #MAC HITS", 0, 26); 
-  tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
-  tft.drawString("MAC ADDRESS       CAPTURED SSIDs", 0, 41); 
-  tft.drawLine(0, 57, 480, 57, TFT_WHITE); 
+  tft.drawString("ID VENDOR        FIRST|LAST   RSSI DIST #MAC HITS", 0, 26);
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  tft.drawString("MAC ADDRESS       CAPTURED SSIDs", 0, 41);
+  tft.drawLine(0, 57, 480, 57, TFT_WHITE);
 
   // ==========================================
   // 3. DATA ROWS (3-Line Data Injection)
@@ -1054,21 +1054,21 @@ void drawProbeTracker() {
       }
     }
 
-    int y = 60 + (row * 46); 
+    int y = 60 + (row * 46);
 
     if (!is_slot_empty) {
-      
+
       // --- LINE 1: Metadata ---
       if (probeList[i].mac_rotations > 1) {
-          tft.setTextColor(TFT_ORANGE); 
+          tft.setTextColor(TFT_ORANGE);
       } else {
-          tft.setTextColor(TFT_GREEN);  
+          tft.setTextColor(TFT_GREEN);
       }
 
       bool is_randomized = (probeList[i].mac[0] & 0x02) != 0;
       char safeVendor[20];
       char rawVendor[20];
-      
+
       if (strcmp(probeList[i].vendor, "Resolving...") == 0) {
           strcpy(rawVendor, "Resolving...");
       } else if (strstr(probeList[i].vendor, "(IE)") != nullptr) {
@@ -1096,31 +1096,31 @@ void drawProbeTracker() {
       // --- UPDATED: Injected mac_rotations into the Line 1 format string ---
       snprintf(metaStr, sizeof(metaStr), "%02d.%-13.13s %13s %4d %4.0fm %4d %4u",
                i + 1, safeVendor, ageCombo, probeList[i].rssi, probeList[i].smoothedDistance, probeList[i].mac_rotations, probeList[i].hits);
-               
+
       tft.setFreeFont(&UbuntuMono_B9pt7b);
-      tft.drawString(metaStr, 0, y); 
+      tft.drawString(metaStr, 0, y);
 
       // --- LINES 2 & 3: MAC Address & Smart SSID Word Wrapper ---
-      tft.setFreeFont(&UbuntuMono_Regular8pt7b); 
-      
+      tft.setFreeFont(&UbuntuMono_Regular8pt7b);
+
       // Keep MAC Orange if it's a rotated device to act as a visual anchor
       if (probeList[i].mac_rotations > 1) {
           tft.setTextColor(TFT_ORANGE);
       } else {
           tft.setTextColor(TFT_WHITE);
       }
-      
+
       // --- UPDATED: Flush left MAC address string ---
       char macStr[20];
-      snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X", 
+      snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
                probeList[i].mac[0], probeList[i].mac[1], probeList[i].mac[2],
                probeList[i].mac[3], probeList[i].mac[4], probeList[i].mac[5]);
-      tft.drawString(macStr, 0, y + 16); 
+      tft.drawString(macStr, 0, y + 16);
 
       tft.setTextColor(TFT_WHITE);
-      char line1[80] = ""; 
-      char line2[100] = ""; 
-      
+      char line1[80] = "";
+      char line2[100] = "";
+
       int true_total_ssids = 0;
       int temp_node = probeList[i].first_ssid_idx;
       while (temp_node != -1) {
@@ -1137,23 +1137,23 @@ void drawProbeTracker() {
       while (current_node != -1) {
         char next_str[36];
         snprintf(next_str, sizeof(next_str), "%s", ssidPool[current_node].text);
-        
+
         if (strlen(next_str) == 0) {
             current_node = ssidPool[current_node].next_node_idx;
-            continue; 
+            continue;
         }
-        
+
         char addition[40];
-        if (ssids_drawn == 0) snprintf(addition, sizeof(addition), "%s", next_str); 
+        if (ssids_drawn == 0) snprintf(addition, sizeof(addition), "%s", next_str);
         else snprintf(addition, sizeof(addition), "|%s", next_str);
 
         // --- UPDATED: Expanded Line 1 limit to 41 chars ---
         if (!on_line2) {
-            if (strlen(line1) + strlen(addition) <= 41) { 
+            if (strlen(line1) + strlen(addition) <= 41) {
                 strlcat(line1, addition, sizeof(line1));
                 ssids_drawn++;
             } else {
-                on_line2 = true; 
+                on_line2 = true;
             }
         }
 
@@ -1161,11 +1161,11 @@ void drawProbeTracker() {
             if (strlen(line2) == 0) snprintf(addition, sizeof(addition), "%s", next_str);
             else snprintf(addition, sizeof(addition), "|%s", next_str);
 
-            if (strlen(line2) + strlen(addition) <= 58) { 
+            if (strlen(line2) + strlen(addition) <= 58) {
                 strlcat(line2, addition, sizeof(line2));
                 ssids_drawn++;
             } else {
-                break; 
+                break;
             }
         }
         current_node = ssidPool[current_node].next_node_idx;
@@ -1176,9 +1176,9 @@ void drawProbeTracker() {
       } else if (ssids_drawn < true_total_ssids) {
         char plusStr[8];
         snprintf(plusStr, sizeof(plusStr), "|+%d", (true_total_ssids - ssids_drawn));
-        
+
         // --- UPDATED: Increased Line 1 safety check to 36 for the +X tag ---
-        if (on_line2 || strlen(line1) > 36) { 
+        if (on_line2 || strlen(line1) > 36) {
             strlcat(line2, plusStr, sizeof(line2));
         } else {
             strlcat(line1, plusStr, sizeof(line1));
@@ -1187,9 +1187,9 @@ void drawProbeTracker() {
 
       // --- UPDATED: Moved starting coordinate from 165 to 145 ---
       tft.drawString(line1, 145, y + 16);
-      
+
       if (strlen(line2) > 0) {
-        tft.drawString(line2, 0, y + 30); 
+        tft.drawString(line2, 0, y + 30);
       }
       tft.drawLine(0, y + 45, 480, y + 45, hex24to565(0x222222));
     }
@@ -1199,16 +1199,16 @@ void drawProbeTracker() {
   // ==========================================
   // 4. UNIFIED NAVIGATION FOOTER
   // ==========================================
-  tft.setFreeFont(&UbuntuMono_Regular9pt7b); 
-  tft.drawLine(0, 294, 480, 294, TFT_WHITE); 
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  tft.drawLine(0, 294, 480, 294, TFT_WHITE);
 
   if (probe_current_page > 0 && total_sniffed_probes > 0) {
     tft.setTextColor(TFT_WHITE);
     tft.drawString("<- PREV", 20, 300);
   }
-  
+
   tft.setTextColor(TFT_RED);
-  tft.drawString("BACK", 215, 300); 
+  tft.drawString("BACK", 215, 300);
 
   if (((probe_current_page + 1) * PROBES_PER_PAGE) < total_sniffed_probes) {
     tft.setTextColor(TFT_WHITE);

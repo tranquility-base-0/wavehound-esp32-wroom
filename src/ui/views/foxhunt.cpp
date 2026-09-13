@@ -11,11 +11,10 @@
 
 int target_rssi = 0;
 
-
 // ==========================================
 // FOXHUNT STATE GLOBALS
 // ==========================================
-bool is_selecting_target = false; 
+bool is_selecting_target = false;
 bool is_foxhunting = false;
 uint8_t foxhunt_target_mac[6] = {0};
 char foxhunt_target_vendor[28] = "Unknown";
@@ -55,13 +54,13 @@ void updateFoxhuntSignal(int packet_rssi) {
   // 3. REAL-TIME TACTICAL STRETCHING
   // Mode-agnostic: Works for Wi-Fi, AP, and BLE
   // ==========================================
-  
+
   // Stretch the floor (Triggering on 0 for Wi-Fi and -100 for BLE sentinels)
   if (foxhunt_rssi_min == 0 || foxhunt_rssi_min == -100 || packet_rssi < foxhunt_rssi_min) {
       foxhunt_rssi_min = packet_rssi;
   }
-  
-  // Stretch the ceiling 
+
+  // Stretch the ceiling
   if (foxhunt_rssi_max == -100 || packet_rssi > foxhunt_rssi_max) {
       foxhunt_rssi_max = packet_rssi;
       foxhunt_bounds_seeded = true;
@@ -69,10 +68,10 @@ void updateFoxhuntSignal(int packet_rssi) {
 }
 void drawFoxhuntScreen() {
     last_displayed_rssi = -999; // Force redraw on every full screen draw
-    last_drawn_min = 0;         // NEW: Force bounds redraw 
+    last_drawn_min = 0;         // NEW: Force bounds redraw
     last_drawn_max = 0;         // NEW: Force bounds redraw
     tft.fillScreen(TFT_BLACK);
-    
+
     // ==========================================
     // ZONE MAP (non-overlapping):
     // Y=0-30:    Header (static)
@@ -84,9 +83,9 @@ void drawFoxhuntScreen() {
     // Y=220-275: Alert banner (DYNAMIC — owned by loop() updater)
     // Y=285-320: Footer (static)
     // ==========================================
-    
+
     // 1. HEADER (static)
-    tft.fillRect(0, 0, 480, 30, 
+    tft.fillRect(0, 0, 480, 30,
                  (currentRadioMode == RADIO_BLE) ? TFT_PURPLE : TFT_RED);
     tft.setTextColor(TFT_WHITE);
     tft.setTextDatum(MC_DATUM);
@@ -100,7 +99,7 @@ void drawFoxhuntScreen() {
     tft.setFreeFont(&UbuntuMono_Regular9pt7b);
     tft.setTextColor(TFT_CYAN);
     char targetStr[64];
-    snprintf(targetStr, sizeof(targetStr), 
+    snprintf(targetStr, sizeof(targetStr),
              "TARGET: %02X:%02X:%02X:%02X:%02X:%02X",
              foxhunt_target_mac[0], foxhunt_target_mac[1],
              foxhunt_target_mac[2], foxhunt_target_mac[3],
@@ -116,7 +115,7 @@ void drawFoxhuntScreen() {
 
     // 4. TARGET CHANNEL (Replaces the phantom "SIGNAL" label)
     if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP) {
-        tft.setTextColor(TFT_ORANGE); 
+        tft.setTextColor(TFT_ORANGE);
         char chStr[16];
         snprintf(chStr, sizeof(chStr), "CH: %02d", target_channel);
         tft.drawString(chStr, 240, 76);
@@ -145,7 +144,7 @@ void updateFoxhuntRadar() {
     // Animate using the dynamic delay interval
     if (millis() - last_anim_tick > current_delay) {
         last_anim_tick = millis();
-        
+
         int current_val = (int)smoothed_rssi;
         uint16_t houndColor = TFT_WHITE;
         int step_time = 300;
@@ -162,24 +161,24 @@ void updateFoxhuntRadar() {
             step_time = 600;               // Slow walk
         }
 
-        int dog_x = HOUND_CENTER_X - (HOUND_WIDTH / 2); 
-        int dog_y = HOUND_BASELINE_Y - HOUND_HEIGHT; 
+        int dog_x = HOUND_CENTER_X - (HOUND_WIDTH / 2);
+        int dog_y = HOUND_BASELINE_Y - HOUND_HEIGHT;
 
         // Look up the actual frame (0, 1, or 2) from our sequence array
         int current_frame = ANIM_SEQUENCE[sequence_index];
 
         // Render the frame to the display
         tft.drawBitmap(dog_x, dog_y, houndAnimation[current_frame], HOUND_WIDTH, HOUND_HEIGHT, houndColor, TFT_BLACK);
-        
+
         // NOW determine how long THIS newly drawn frame should stay on screen
         if (current_frame == 2) {
             current_delay = 1000;      // Always lock to 1-second pause when looking up
         } else {
             current_delay = step_time; // Apply the dynamically calculated walking speed
         }
-        
+
         // Advance to the next step in the sequence, looping back to 0 at the end
-        sequence_index = (sequence_index + 1) % SEQUENCE_LENGTH; 
+        sequence_index = (sequence_index + 1) % SEQUENCE_LENGTH;
     }
     // -----------------------------------
 
@@ -193,9 +192,9 @@ void updateFoxhuntRadar() {
             tft.fillRect(0, 88, 480, 44, TFT_BLACK); // Expanded clear box for giant text
             tft.setTextDatum(MC_DATUM);
             tft.setFreeFont(&UbuntuMono_B9pt7b);
-            
+
             // THE MULTIPLIER: Scales 9pt to ~27pt
-            tft.setTextSize(3); 
+            tft.setTextSize(3);
 
             // Color-code by signal strength
             if      (current_display_val > -60) tft.setTextColor(COLOR_HOT_CHEST);
@@ -205,9 +204,9 @@ void updateFoxhuntRadar() {
             char rssiStr[32];
             snprintf(rssiStr, sizeof(rssiStr), "%d dBm", current_display_val);
             tft.drawString(rssiStr, 240, 110);
-            
+
             // THE RESET: Crucial to prevent UI corruption!
-            tft.setTextSize(1); 
+            tft.setTextSize(1);
             tft.setTextDatum(TL_DATUM);
             last_displayed_rssi = current_display_val;
         }
@@ -217,13 +216,13 @@ void updateFoxhuntRadar() {
         // ==========================================
         if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_BLE) {
             if (foxhunt_rssi_min != last_drawn_min || foxhunt_rssi_max != last_drawn_max) {
-                
+
                 tft.fillRect(0, 135, 480, 60, TFT_BLACK); // Clean wipe
                 tft.setFreeFont(&UbuntuMono_Regular9pt7b);
                 tft.setTextDatum(MC_DATUM);
 
                 char boundStr[64];
-                snprintf(boundStr, sizeof(boundStr), 
+                snprintf(boundStr, sizeof(boundStr),
                          "FLOOR: %d dBm  |  CEILING: %d dBm", foxhunt_rssi_min, foxhunt_rssi_max);
                 tft.setTextColor(TFT_GREEN);
                 tft.drawString(boundStr, 240, 165); // Centered vertically in the 60px wipe box

@@ -27,9 +27,6 @@ void drawDeviceList();
 // CORE 0 CACHES
 // ------------------------------------------
 
-
-
-
 uint32_t leak_hash_history[32] = {0};
 uint8_t  leak_hash_idx = 0;
 
@@ -38,21 +35,13 @@ uint8_t  leak_hash_idx = 0;
 // ------------------------------------------
 // Shared metadata — single source of truth
 
-
-
-
 // --- TRANSIENT HEAP POINTERS ---
 LiveCaptureEvent* ptr_isr_evt = nullptr;
 LiveCaptureEvent* ptr_core1_evt = nullptr;
 
-
-
-
-
 QueueHandle_t liveDumpQueue = NULL;
 QueueHandle_t leakQueue = NULL;
 uint8_t leak_current_page = 0;
-
 
 LeakSortMode currentLeakSort = SORT_LEAK_AGE; // Default
 
@@ -92,22 +81,15 @@ uint32_t leak_core1_dropped  = 0;
 // FORMATTING HELPERS
 // ------------------------------------------
 
-
-
-
-
-
-
-
 // ==========================================
 // ABSOLUTE WATERFALL GLOBALS
 // ==========================================
 uint32_t traffic_history[240] = {0}; // 480 width / 2px increments = 240 columns
 uint32_t absolute_max_traffic = 10;  // Seeded to prevent divide-by-zero
 bool should_alert_crypto(const uint8_t* mac_a, const uint8_t* mac_b, uint32_t current_ms) {
-    
+
     // --- THE MAC NORMALIZATION FIX ---
-    // Always store the numerically smaller MAC first. 
+    // Always store the numerically smaller MAC first.
     // This collapses AP->STA and STA->AP into a single bidirectional conversation slot.
     const uint8_t* lo = (memcmp(mac_a, mac_b, 6) <= 0) ? mac_a : mac_b;
     const uint8_t* hi = (lo == mac_a) ? mac_b : mac_a;
@@ -117,11 +99,11 @@ bool should_alert_crypto(const uint8_t* mac_a, const uint8_t* mac_b, uint32_t cu
 
     // 1. Scan the cache for a match AND track the oldest slot simultaneously
     for (int i = 0; i < ALERT_CACHE_SIZE; i++) {
-        
+
         // Match found using the normalized MACs!
         if (memcmp(crypto_cache[i].mac_src, lo, 6) == 0 &&
             memcmp(crypto_cache[i].mac_dst, hi, 6) == 0) {
-            
+
             if (current_ms - crypto_cache[i].last_alert_ms > SEC_COOLDOWN_MS) {
                 crypto_cache[i].last_alert_ms = current_ms;
                 return true;
@@ -136,12 +118,12 @@ bool should_alert_crypto(const uint8_t* mac_a, const uint8_t* mac_b, uint32_t cu
             oldest_idx = i;
         }
     }
-    
+
     // 2. New flow: Overwrite the genuinely oldest slot (True LRU)
     memcpy(crypto_cache[oldest_idx].mac_src, lo, 6);
     memcpy(crypto_cache[oldest_idx].mac_dst, hi, 6);
     crypto_cache[oldest_idx].last_alert_ms = current_ms;
-    
+
     return true;
 }
 void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
@@ -165,7 +147,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       bool target_is_tx = (memcmp(addr2, foxhunt_target_mac, 6) == 0);
 
       if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_WIFI) {
-          
+
           // THE PHYSICS FIX (Signal Strength)
           // ONLY feed the math engine if our target is the physical transmitter.
           // Because we require an AP lock first, the channel is already frozen.
@@ -178,24 +160,24 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // ==========================================
 
   // ==========================================
-  // NEW: MODE-AGNOSTIC PASSIVE SSID SCRAPER 
+  // NEW: MODE-AGNOSTIC PASSIVE SSID SCRAPER
   // Runs in ALL modes to silently maintain the BSSID Cache
   // ==========================================
   uint16_t fc = payload[0] | (payload[1] << 8);
-  
+
   // Check if Beacon (0x80) or Probe Response (0x50)
   if ((fc & 0xFF) == 0x80 || (fc & 0xFF) == 0x50) {
       // Address 3 (mac3) is the BSSID in these frames
       int offset = 36; // Skip MAC header (24 bytes) + Fixed Mgmt Params (12 bytes)
-      
+
       if (offset + 1 < len && payload[offset] == 0x00) { // Tag 0 is SSID
           uint8_t ssid_len = payload[offset + 1];
-          
+
           if (ssid_len > 0 && ssid_len <= 32 && (offset + 2 + ssid_len) <= len) {
               int target_idx = -1;
               int oldest_idx = 0;
               uint32_t oldest_time = 0xFFFFFFFF;
-              
+
               for (int i = 0; i < MAX_BSSID_CACHE; i++) {
                   if (memcmp(bssidCache[i].bssid, mac3, 6) == 0) {
                       target_idx = i;
@@ -206,9 +188,9 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       oldest_idx = i;
                   }
               }
-              
+
               if (target_idx == -1) target_idx = oldest_idx;
-              
+
               memcpy(bssidCache[target_idx].bssid, mac3, 6);
               memcpy(bssidCache[target_idx].ssid, &payload[offset + 2], ssid_len);
               bssidCache[target_idx].ssid[ssid_len] = '\0';
@@ -222,13 +204,13 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // BYPASS: AP WATERFALL MODE FUNNEL
   // ==========================================
   if (currentRadioMode == RADIO_AP) {
-    
+
     // PART 1: THE DICTIONARY (Catch Beacons to learn SSIDs)
     if (type == WIFI_PKT_MGMT) {
       uint8_t subtype = (payload[0] >> 4) & 0x0F;
-      
+
       // Subtype 8 is a Beacon Frame
-      if (subtype == 8) { 
+      if (subtype == 8) {
         int ap_index = -1;
         for (int i = 0; i < liveApCount; i++) {
           if (memcmp((void*)liveApData[i].bssid, addr2, 6) == 0) {
@@ -236,7 +218,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             break;
           }
         }
-        
+
         if (ap_index == -1) {
           if (liveApCount < MAX_AP_RECORDS) {
             // Space available, claim the next slot
@@ -275,9 +257,9 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
           // If we successfully claimed a slot (either a new one or an evicted one)
           if (ap_index != -1) {
-            
+
             // --- NEW: EVICTION SAFETY INIT ---
-            // Explicitly clear the country memory before the IE walk so 
+            // Explicitly clear the country memory before the IE walk so
             // the new AP doesn't inherit a stale code from the previous occupant.
             liveApData[ap_index].country[0] = '\0';
             liveApData[ap_index].country[1] = '\0';
@@ -289,16 +271,16 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             // ==========================================
             uint8_t true_channel = CHANNELS[current_ch_idx]; // Fallback to current hopper
             char extracted_ssid[32] = "<HIDDEN>"; // Default to hidden
-            
+
             // Beacons have a 24-byte MAC Header + 12-byte Fixed Parameters = 36 bytes before Tags begin.
-            int offset = 36; 
-            
+            int offset = 36;
+
             while (offset < len - 4) { // Loop through tags, stopping before the 4-byte FCS checksum
               uint8_t tag_num = payload[offset];
               uint8_t tag_len = payload[offset + 1];
-              
+
               if (offset + 2 + tag_len > len) break; // Memory safety bounds check
-              
+
               // Tag 0: SSID
               if (tag_num == 0) {
                 if (tag_len > 0 && tag_len <= 31) {
@@ -314,7 +296,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               else if (tag_num == 7 && tag_len >= 2) {
                 uint8_t c0 = payload[offset + 2];
                 uint8_t c1 = payload[offset + 3];
-                
+
                 // Sanity check: valid ISO country codes are uppercase ASCII letters
                 if (c0 >= 'A' && c0 <= 'Z' && c1 >= 'A' && c1 <= 'Z') {
                     liveApData[ap_index].country[0] = c0;
@@ -331,7 +313,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             // POPULATE THE AP RECORD
             // ==========================================
             memcpy((void*)liveApData[ap_index].bssid, addr2, 6);
-            
+
             unsigned long now = millis();
             liveApData[ap_index].first_seen = now;
             liveApData[ap_index].last_seen = now;
@@ -345,10 +327,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             liveApData[ap_index].rssi_min = pkt->rx_ctrl.rssi;
             liveApData[ap_index].rssi_max = pkt->rx_ctrl.rssi;
             liveApData[ap_index].channel = true_channel; // <--- INJECT THE TRUE CHANNEL
-            
+
             // ssid is char ssid[26] — trimmed from 28 to accommodate rssi_min/rssi_max
             strncpy((char*)liveApData[ap_index].ssid, extracted_ssid, sizeof(liveApData[ap_index].ssid));
-            
+
             // ADD THIS LINE: Force null termination to prevent runaway memory reads
             liveApData[ap_index].ssid[sizeof(liveApData[ap_index].ssid) - 1] = '\0';
 
@@ -357,10 +339,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             // ==========================================
             liveApData[ap_index].has_clone = false;
 
-            if (strlen((char*)liveApData[ap_index].ssid) > 0 && 
-                strcmp((char*)liveApData[ap_index].ssid, "<HIDDEN>") != 0 && 
+            if (strlen((char*)liveApData[ap_index].ssid) > 0 &&
+                strcmp((char*)liveApData[ap_index].ssid, "<HIDDEN>") != 0 &&
                 strcmp((char*)liveApData[ap_index].ssid, "<UNKNOWN>") != 0) {
-                
+
                 for (int i = 0; i < liveApCount; i++) {
                     // Skip self-comparison (crucial if ap_index claimed an evicted slot)
                     if (i == ap_index) continue;
@@ -368,7 +350,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                     if (strcmp((char*)liveApData[i].ssid, (char*)liveApData[ap_index].ssid) == 0) {
                         liveApData[ap_index].has_clone = true;
                         liveApData[i].has_clone = true;
-                        break; 
+                        break;
                     }
                 }
             }
@@ -380,12 +362,12 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
         // If the AP made it into the array, update metadata but IGNORE TRAFFIC MATH!
         if (ap_index != -1) {
           liveApData[ap_index].last_seen = millis();
-          liveApData[ap_index].rssi = pkt->rx_ctrl.rssi; 
+          liveApData[ap_index].rssi = pkt->rx_ctrl.rssi;
           if (pkt->rx_ctrl.rssi < liveApData[ap_index].rssi_min) {
               liveApData[ap_index].rssi_min = pkt->rx_ctrl.rssi;
           }
           // rssi_max == 0 means uninitialized — same sentinel logic as MacRecord
-          if (pkt->rx_ctrl.rssi > liveApData[ap_index].rssi_max || 
+          if (pkt->rx_ctrl.rssi > liveApData[ap_index].rssi_max ||
               liveApData[ap_index].rssi_max == 0) {
               liveApData[ap_index].rssi_max = pkt->rx_ctrl.rssi;
           }
@@ -405,14 +387,14 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       for (int i = 0; i < liveApCount; i++) {
         bool is_tx = (memcmp((void*)liveApData[i].bssid, addr2, 6) == 0);
         bool is_rx = (memcmp((void*)liveApData[i].bssid, addr1, 6) == 0);
-        
+
         if (is_tx || is_rx) {
           liveApData[i].packets += 1;
           liveApData[i].sum_bytes += len;
           liveApData[i].sum_sq_bytes += ((uint64_t)len * len);
           liveApData[i].rssi = pkt->rx_ctrl.rssi;
           liveApData[i].last_seen = millis();
-          
+
           // Max Rate Trap: Only update if the new packet is faster!
           uint8_t current_rate = getBitrateMbps(pkt);
           if (current_rate > liveApData[i].max_rate) {
@@ -422,12 +404,12 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           // Route the traffic
           if (is_tx) liveApData[i].tx_bytes += len;
           else       liveApData[i].rx_bytes += len;
-          
-          break; 
+
+          break;
         }
       }
     }
-    
+
     return; // Returns cleanly from RADIO_AP mode
   }
 
@@ -436,7 +418,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // ==========================================
   if (currentRadioMode == RADIO_CHANNELS) {
     uint8_t ch = CHANNELS[current_ch_idx];
-    int idx = -1; 
+    int idx = -1;
 
     // 1. Search for the active channel in our existing array
     for (int i = 0; i < liveChannelCount; i++) {
@@ -454,16 +436,16 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
             unsigned long now = millis();
             liveChannelData[idx].first_seen = now;
             liveChannelData[idx].last_seen = now;
-            
+
             // Seed the physics engine
             liveChannelData[idx].avg_rssi = (float)pkt->rx_ctrl.rssi;
             liveChannelData[idx].prev_rssi = (float)pkt->rx_ctrl.rssi; // Remember the very first packet
-            liveChannelData[idx].ema_variance = 0.0; 
-            liveChannelData[idx].ema_cov = 0.0;      
-            
-            liveChannelCount++; 
+            liveChannelData[idx].ema_variance = 0.0;
+            liveChannelData[idx].ema_cov = 0.0;
+
+            liveChannelCount++;
         } else {
-            return; 
+            return;
         }
     }
 
@@ -472,29 +454,29 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     liveChannelData[idx].sum_bytes += len;
     liveChannelData[idx].sum_sq_bytes += ((uint64_t)len * len);
     liveChannelData[idx].last_seen = millis();
-    
+
     // --- EMA MEAN, VARIANCE, & COVARIANCE CALCULATION ---
     float alpha = 0.05; // 5% weight to new packets, 95% to history
     float current_rssi = (float)pkt->rx_ctrl.rssi;
-    
+
     // 1. Calculate the difference from the mean for the CURRENT packet
     float diff = current_rssi - liveChannelData[idx].avg_rssi;
-    
+
     // 2. Calculate the difference from the mean for the PREVIOUS packet
     float prev_diff = liveChannelData[idx].prev_rssi - liveChannelData[idx].avg_rssi;
-    
+
     // 3. Update Autocovariance (Must happen before updating variance/mean)
     liveChannelData[idx].ema_cov = (1.0 - alpha) * (liveChannelData[idx].ema_cov + alpha * diff * prev_diff);
-    
+
     // 4. Update Variance
     liveChannelData[idx].ema_variance = (1.0 - alpha) * (liveChannelData[idx].ema_variance + alpha * diff * diff);
-    
+
     // 5. Update Mean
     liveChannelData[idx].avg_rssi += (alpha * diff);
-    
+
     // 6. Store current RSSI into memory for the next packet's covariance check
     liveChannelData[idx].prev_rssi = current_rssi;
-    
+
     // --- UPLINK / DOWNLINK ROUTER ---
     uint8_t ds_flags = payload[1] & 0x03;
     bool to_ds   = (ds_flags & 0x01); // Client -> AP
@@ -504,10 +486,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     if (to_ds && !from_ds) is_uplink = true;
     else if (payload[0] == 0x40) is_uplink = true; // Probe Requests
 
-    if (is_uplink) liveChannelData[idx].rx_bytes += len; 
-    else           liveChannelData[idx].tx_bytes += len; 
+    if (is_uplink) liveChannelData[idx].rx_bytes += len;
+    else           liveChannelData[idx].tx_bytes += len;
 
-    return; 
+    return;
   }
 
   // ==========================================
@@ -519,21 +501,21 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     // THE SMART BOUNCER & IE PARSER
     // ==========================================
     bool is_randomized = (addr2[0] & 0x02) != 0;
-    
-    int offset = 24; 
+
+    int offset = 24;
     char final_ssid[33] = "";
-    bool is_valid_ssid = false; 
-    
-    char ie_vendor[25] = "";    
+    bool is_valid_ssid = false;
+
+    char ie_vendor[25] = "";
     uint8_t highest_weight_found = 0; // Resets for every new packet
     uint32_t live_hw_hash = 5381;
     // 1. FIRST PASS: Parse the IE tags to build the profile
     while (offset < len - 4) {
       uint8_t tag_num = payload[offset];
       uint8_t tag_len = payload[offset + 1];
-      
+
       if (offset + 2 + tag_len > len) break; // Memory safety boundary
-      
+
       // --- BUILD THE HARDWARE HASH ---
       // 1. Always hash the tag_num (Captures the structural skeleton)
       live_hw_hash = ((live_hw_hash << 5) + live_hw_hash) + tag_num;
@@ -551,7 +533,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       if (tag_num == 0) {
         if (tag_len == 0) {
           strlcpy(final_ssid, "<Wld>", sizeof(final_ssid));
-        } 
+        }
         else if (tag_len <= 32) {
           if (payload[offset + 2] == 0x00) {
             strlcpy(final_ssid, "<Nul>", sizeof(final_ssid));
@@ -561,13 +543,13 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               char ch = payload[offset + 2 + c];
               if (ch >= 32 && ch <= 126) {
                 final_ssid[c] = ch;
-                has_valid_chars = true; 
+                has_valid_chars = true;
               } else {
                 final_ssid[c] = '.';
               }
             }
             final_ssid[tag_len] = '\0';
-            
+
             if (has_valid_chars) {
               is_valid_ssid = true; // Valid printable network name found!
             } else {
@@ -576,43 +558,43 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           }
         }
       }
-      
+
       // Extract the True Vendor via Tag 221
       else if (tag_num == 221 && tag_len >= 3) {
         // Search the compiled array from your include/tag221Lookup.h file
         for (int v = 0; v < TAG_221_COUNT; v++) {
-          if (payload[offset+2] == TAG_221_DATABASE[v].oui[0] && 
-              payload[offset+3] == TAG_221_DATABASE[v].oui[1] && 
+          if (payload[offset+2] == TAG_221_DATABASE[v].oui[0] &&
+              payload[offset+3] == TAG_221_DATABASE[v].oui[1] &&
               payload[offset+4] == TAG_221_DATABASE[v].oui[2]) {
-                
+
             if (TAG_221_DATABASE[v].weight > highest_weight_found) {
               highest_weight_found = TAG_221_DATABASE[v].weight;
               snprintf(ie_vendor, sizeof(ie_vendor), "%s~IE", TAG_221_DATABASE[v].name);
             }
-            break; 
+            break;
           }
         }
       }
-      
-      offset += 2 + tag_len; 
+
+      offset += 2 + tag_len;
     }
 
     // 2. THE DECISION GATE
     // Universal Pass: Real MACs get through.
     // Conditional Pass: Randomized MACs only get through if targeting a named network.
     if (!is_randomized || (is_randomized && is_valid_ssid)) {
-      if (strlen(final_ssid) > 0) { 
-        
+      if (strlen(final_ssid) > 0) {
+
         // ONLY pass the Tag 221 guess if the MAC is randomized!
         // If it is a physical MAC, pass an empty string so Core 1 checks the SD Card.
         if (is_randomized) {
           processProbeRequestShared(addr2, final_ssid, ie_vendor, pkt->rx_ctrl.rssi, live_hw_hash);
         } else {
-          processProbeRequestShared(addr2, final_ssid, "", pkt->rx_ctrl.rssi, live_hw_hash); 
+          processProbeRequestShared(addr2, final_ssid, "", pkt->rx_ctrl.rssi, live_hw_hash);
         }
-        
+
       }
-    }    
+    }
     return; // EXIT EARLY: Do not let Management frames hit the bandwidth math!
   }
   // ==========================================
@@ -631,8 +613,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // ==========================================
   if (frame_type == 0x00 && frame_subtype == 12) {
       uint32_t now_ms = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-      
-      // Management frame headers are strictly 24 bytes. 
+
+      // Management frame headers are strictly 24 bytes.
       // The 2-byte Reason Code sits immediately after the header (Little-Endian).
       uint16_t reason_code = 0;
       if (len >= 26) {
@@ -641,13 +623,13 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
       PacketCapture leak;
       memset(&leak, 0, sizeof(PacketCapture));
-      
+
       leak.meta.timestamp = now_ms;
       leak.meta.frame_length = pkt->rx_ctrl.sig_len;
       leak.meta.channel = pkt->rx_ctrl.channel;
       leak.meta.frame_subtype = 12;
       leak.meta.is_high_value = true; // Deauths are always a massive red flag!
-      
+
       // Address 1: Destination, Address 2: Source, Address 3: BSSID
       memcpy(leak.meta.dst_mac, payload + 4, 6);
       memcpy(leak.meta.src_mac, payload + 10, 6);
@@ -668,8 +650,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       // Fire directly to the UI and Logger, completely bypassing the Data parser
       //if (leakQueue != NULL) xQueueSendFromISR(leakQueue, &leak, NULL);
       //if (liveDumpQueue != NULL) xQueueSendFromISR(liveDumpQueue, &leak, NULL);
-      
-      return; 
+
+      return;
   }
 
   // ==========================================
@@ -678,9 +660,9 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   if (currentRadioMode == RADIO_PCAP) { // <-- THE CRITICAL GATE
       // 1. TALLY ABSOLUTE RF VOLUME (Before the gate!)
       capture_bytes_tick += pkt->rx_ctrl.sig_len;
-      
+
       bool is_protected = (payload[1] & 0x40) != 0;
-      
+
       if (!is_protected) {
           // ==========================================
           // DYNAMIC MAC HEADER SIZING (HT Control & WDS)
@@ -688,20 +670,20 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           bool is_qos = (payload[0] & 0x80) != 0;
           bool to_ds = (payload[1] & 0x01) != 0;
           bool from_ds = (payload[1] & 0x02) != 0;
-          
-          // FIX 1: Strict check for +HTC. The Order bit (0x80) only means +HTC 
+
+          // FIX 1: Strict check for +HTC. The Order bit (0x80) only means +HTC
           // if it is a QoS Data frame! Otherwise, it just means "Strictly Ordered".
-          bool has_ht_ctrl = is_qos && ((payload[1] & 0x80) != 0); 
-          
+          bool has_ht_ctrl = is_qos && ((payload[1] & 0x80) != 0);
+
           uint8_t header_len = 24;          // Base MAC Header
           if (to_ds && from_ds) {
               header_len += 6;              // Address 4 present (WDS Bridge)
           }
-          
+
           // --- SAFE QOS OFFSET ---
           // Save the exact location of the QoS Control field before HT Control shifts the header length!
-          uint8_t qos_offset = header_len; 
-          
+          uint8_t qos_offset = header_len;
+
           if (is_qos) {
               header_len += 2;              // QoS Control present
           }
@@ -712,21 +694,21 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
           // --- METADATA EXTRACTION ---
           uint8_t captured_subtype = (payload[0] & 0xF0) >> 4;
-          uint8_t captured_direction = payload[1] & 0x03; 
-          uint8_t captured_channel = pkt->rx_ctrl.channel; 
-          uint8_t captured_protocol = 0; 
+          uint8_t captured_direction = payload[1] & 0x03;
+          uint8_t captured_channel = pkt->rx_ctrl.channel;
+          uint8_t captured_protocol = 0;
           // --------------------------------
-          
+
           if (len > header_len) {
               uint8_t* frame_body = payload + header_len;
               uint16_t body_len = len - header_len;
-              
+
               // --- STRIP LLC, IP, AND UDP HEADERS ---
               uint16_t captured_src_port = 0;
               uint16_t captured_dst_port = 0;
-              uint16_t ether_type = 0; 
-              uint8_t tcp_flags = 0;   
-              
+              uint16_t ether_type = 0;
+              uint8_t tcp_flags = 0;
+
               uint8_t captured_ip_version = 0;
               uint8_t captured_src_ip[16] = {0};
               uint8_t captured_dst_ip[16] = {0};
@@ -745,11 +727,11 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   // The ENTIRE massive aggregate blob will fall straight through to the Catch-All!
                   captured_protocol = 255;
               }
-              
+
               // 1. Skip LLC/SNAP Header (8 bytes) if present AND not an A-MSDU.
               if (!is_amsdu && body_len > 8 && frame_body[0] == 0xAA && frame_body[1] == 0xAA) {
                   bool is_apple = (frame_body[3] == 0x00 && frame_body[4] == 0x17 && frame_body[5] == 0xF2);
-                  ether_type = (frame_body[6] << 8) | frame_body[7]; // <--- GRAB ETHERTYPE HERE  
+                  ether_type = (frame_body[6] << 8) | frame_body[7]; // <--- GRAB ETHERTYPE HERE
                   frame_body += 8;
                   body_len -= 8;
 
@@ -765,10 +747,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                               break;
                           }
                       }
-                      
+
                       if (shim_len != -1) {
                           ether_type = 0x86DD; // Force the EtherType to IPv6
-                          
+
                           // THE FIX: Step OVER the 86 DD bytes (+2) to reach the 0x60 IPv6 header!
                           frame_body += (shim_len + 2);
                           body_len -= (shim_len + 2);
@@ -793,7 +775,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   uint16_t ip_total_len = (frame_body[2] << 8) | frame_body[3];
                   // Safety check: ensure IP length isn't larger than our physical capture
                   if (ip_total_len < body_len) {
-                  body_len = ip_total_len; 
+                  body_len = ip_total_len;
                   }
                   // --------------------------------------------------------------
                   // IPv4 Source IP is at offset 12, Destination IP is at offset 16
@@ -801,14 +783,14 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   memcpy(captured_dst_ip, &frame_body[16], 4);
 
                   uint8_t ip_header_len = (frame_body[0] & 0x0F) * 4;
-                  
+
                   // 3. Check Protocol field (Byte 9) for UDP (17)
                   if (frame_body[9] == 17 && body_len > (ip_header_len + 8)) {
                       captured_protocol = 17;
                       uint8_t* udp_header = frame_body + ip_header_len;
                       captured_src_port = (udp_header[0] << 8) | udp_header[1];
                       captured_dst_port = (udp_header[2] << 8) | udp_header[3];
-                      
+
                       frame_body += (ip_header_len + 8);
                       body_len -= (ip_header_len + 8);
                   }
@@ -831,10 +813,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   // --- ICMPv4 (1) and Unknown Protocol Catch-All ---
                   else if (frame_body[9] == 1 && body_len > ip_header_len) {
                       captured_protocol = 1; // ICMPv4
-                      frame_body += ip_header_len; 
+                      frame_body += ip_header_len;
                       body_len -= ip_header_len;
                   } else {
-                      // Unknown protocol (e.g. IGMP, GRE). 
+                      // Unknown protocol (e.g. IGMP, GRE).
                       // Strip the IP header so payload catch-alls don't print garbage!
                       if (body_len > ip_header_len) {
                           frame_body += ip_header_len;
@@ -847,7 +829,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               // 2.5 Check for IPv6 (First nibble is 6)
               else if (!is_amsdu && body_len > 40 && (frame_body[0] & 0xF0) == 0x60) {
                   captured_ip_version = 6;
-                  
+
                   // IPv6 Source IP is at offset 8, Destination IP is at offset 24
                   memcpy(captured_src_ip, &frame_body[8], 16);
                   memcpy(captured_dst_ip, &frame_body[24], 16);
@@ -862,11 +844,11 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   if (next_header == 0 && body_len > ip_header_len + 8) {
                       // The first byte of the extension is the TRUE protocol (e.g., 17 for UDP)
                       next_header = frame_body[ip_header_len];
-                      
+
                       // Length is calculated as (Byte[1] + 1) * 8
                       uint8_t ext_len_modifier = frame_body[ip_header_len + 1];
                       uint16_t total_ext_len = (ext_len_modifier + 1) * 8;
-                      
+
                       // Safely advance the IP header boundary to step over the extension
                       if (body_len > ip_header_len + total_ext_len) {
                           ip_header_len += total_ext_len;
@@ -878,7 +860,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       uint8_t* udp_header = frame_body + ip_header_len;
                       captured_src_port = (udp_header[0] << 8) | udp_header[1];
                       captured_dst_port = (udp_header[2] << 8) | udp_header[3];
-                      
+
                       frame_body += (ip_header_len + 8);
                       body_len -= (ip_header_len + 8);
                   } else if (next_header == 6 && body_len > (ip_header_len + 20)) {
@@ -948,7 +930,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               leak_funnel_seen++;
               // 1. Generate the fast integer hash of the flow
               uint32_t current_hash = hash_flow(frame_body, body_len, captured_src_port, captured_dst_port);
-              
+
               uint32_t now_ms = millis();
               bool should_process = false;
               int cache_idx = -1;
@@ -973,7 +955,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   // Existing Flow: Update stats and check the 30-second cooldown
                   flow_cache[cache_idx].count++;
                   flow_cache[cache_idx].last_seen_ms = now_ms;
-                  
+
                   if (now_ms - flow_cache[cache_idx].last_printed_ms > LIVE_DUMP_COOLDOWN_MS) {
                       should_process = true;
                       flow_cache[cache_idx].last_printed_ms = now_ms;
@@ -997,9 +979,9 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               }
 
               // =========================================================
-              // 4. SHIP RAW BYTES TO CORE 1 
+              // 4. SHIP RAW BYTES TO CORE 1
               // =========================================================
-              
+
                             if (should_process) {
 
                   // =========================================================
@@ -1129,40 +1111,40 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
           // ==========================================
           // INSECURE ENCRYPTION DETECTION (TKIP/WEP)
           // ==========================================
-          
+
           // --- UPGRADED: STRICT HEADER SIZING ---
           bool is_qos = (payload[0] & 0x80) != 0;
           bool to_ds = (payload[1] & 0x01) != 0;
           bool from_ds = (payload[1] & 0x02) != 0;
-          
+
           // The +HTC bit ONLY dictates a 4-byte shift if it is a QoS Data frame!
-          bool has_ht_ctrl = is_qos && ((payload[1] & 0x80) != 0); 
-          
+          bool has_ht_ctrl = is_qos && ((payload[1] & 0x80) != 0);
+
           uint8_t header_len = 24;          // Base MAC Header
           if (to_ds && from_ds) header_len += 6; // Address 4 present (WDS Bridge)
           if (is_qos) header_len += 2;           // QoS Control present
           if (has_ht_ctrl) header_len += 4;      // HT Control present
           // ---------------------------------------
-          
+
           if (len > header_len + 4) {
               uint8_t* iv_ptr = payload + header_len;
-              
+
               bool is_ext_iv = (iv_ptr[3] & 0x20) != 0;
               bool is_valid_key_id = (iv_ptr[3] & 0x1F) == 0;
-              
+
               char tid_str[16] = {0};
-              if (is_qos) { 
+              if (is_qos) {
                   uint8_t tid = payload[header_len - 2] & 0x0F;
                   snprintf(tid_str, sizeof(tid_str), "[TID:%d] ", tid);
               }
-              
+
               bool triggered = false;
               char temp_text[MAX_LEAK_STR_LEN] = {0};
 
               // ONLY evaluate if we mathematically proved it is a valid IV header structure
               if (is_valid_key_id) {
                   if (is_ext_iv) {
-                      // CCMP strictly reserves Byte 2 as 0x00. 
+                      // CCMP strictly reserves Byte 2 as 0x00.
                       // TKIP uses it as a Dummy Byte, mathematically computed as: (TSC1 | 0x20) & 0x7F
                       if (iv_ptr[2] != 0x00) {
                           // THE SILVER BULLET: Verify the IEEE TKIP RFC math
@@ -1181,19 +1163,19 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               // Apply the LRU cache deduplication
               if (triggered) {
                   uint32_t now_ms = xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
-                  
+
                   if (should_alert_crypto(payload + 10, payload + 4, now_ms)) {
-                      
+
                       PacketCapture leak;
                       memset(&leak, 0, sizeof(PacketCapture));
-                      
+
                       leak.meta.timestamp = now_ms;
                       leak.meta.frame_length = pkt->rx_ctrl.sig_len;
                       leak.meta.flow_hash = (payload[9] << 24) | (payload[8] << 16) | (payload[15] << 8) | payload[14];
                       leak.meta.frame_subtype = (payload[0] & 0xF0) >> 4;
                       leak.meta.direction = payload[1] & 0x03;
                       leak.meta.channel = pkt->rx_ctrl.channel;
-                      
+
                       // DS-aware 802.11 address mapping — same four-way form
                       // as the cleartext funnel (capture.cpp). addr1=+4,
                       // addr2=+10, addr3=mac3=+16, addr4=+24 (present: this
@@ -1218,7 +1200,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       }
 
                       strncpy(leak.text, temp_text, MAX_LEAK_STR_LEN - 1);
-                      
+
                       if (leakQueue != NULL) {
     leak_isr_attempts++;
     pcap_cooldown_total++; // cumulative: bypass candidate accepted (waterfall z)
@@ -1231,8 +1213,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 }
                   }
               }
-          } 
-      } 
+          }
+      }
   }
   // ==========================================
 
@@ -1242,8 +1224,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
     // --- THE UNIVERSAL FOXHUNT EXCEPTION ---
     if (is_foxhunting && (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP)) {
-        if (memcmp(addr1, foxhunt_target_mac, 6) == 0 || 
-            memcmp(addr2, foxhunt_target_mac, 6) == 0 || 
+        if (memcmp(addr1, foxhunt_target_mac, 6) == 0 ||
+            memcmp(addr2, foxhunt_target_mac, 6) == 0 ||
             memcmp(mac3, foxhunt_target_mac, 6) == 0) {
             belongs_to_target = true;
         }
@@ -1279,7 +1261,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   bool is_stp_multicast = (client_mac[0] == 0x01 && client_mac[1] == 0x80 && client_mac[2] == 0xC2);
 
   if (is_broadcast || is_ipv4_multicast || is_ipv6_multicast || is_stp_multicast) {
-    client_mac = mac3; 
+    client_mac = mac3;
   }
 
   // 6. Target Exclusion Gate
@@ -1300,13 +1282,13 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       liveData[i].packets += 1;
       liveData[i].sum_bytes += len;
       liveData[i].sum_sq_bytes += ((uint64_t)len * len);
-      
+
       // THE FIX 1: Pure Window Stretching
-      // Track the absolute min/max for this 2-second window without ever 
+      // Track the absolute min/max for this 2-second window without ever
       // deleting history. Only updates when the target is transmitting.
       if (is_tx) {
           liveData[i].rssi = pkt->rx_ctrl.rssi;
-          
+
           if (liveData[i].rssi_min == 0 || pkt->rx_ctrl.rssi < liveData[i].rssi_min) {
               liveData[i].rssi_min = pkt->rx_ctrl.rssi;
           }
@@ -1314,7 +1296,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
               liveData[i].rssi_max = pkt->rx_ctrl.rssi;
           }
       }
-      
+
       uint8_t current_rate = getBitrateMbps(pkt);
       if (current_rate > liveData[i].rate) {
           liveData[i].rate = current_rate;
@@ -1322,7 +1304,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       liveData[i].last_seen = millis();
       if (is_tx) liveData[i].tx_bytes += len;
       else       liveData[i].rx_bytes += len;
-      
+
       return;
     }
   }
@@ -1330,7 +1312,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
   // If we made it here, it's a completely new MAC address!
   if(liveMacCount < MAX_MACS) {
     memcpy((void*)liveData[liveMacCount].mac, client_mac, 6);
-    
+
     // Seed the first packet's math
     liveData[liveMacCount].packets = 1;
     liveData[liveMacCount].sum_bytes = len;
@@ -1340,7 +1322,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
     unsigned long now = millis();
     liveData[liveMacCount].first_seen = now;
     liveData[liveMacCount].last_seen = now;
-    
+
     // THE FIX 2: Dynamic Initializer
     // Seed the bounds directly to the first packet if it's a physical transmission.
     // Otherwise, use the safe defaults so they stretch correctly later.
@@ -1348,10 +1330,10 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
         liveData[liveMacCount].rssi_min = pkt->rx_ctrl.rssi;
         liveData[liveMacCount].rssi_max = pkt->rx_ctrl.rssi;
     } else {
-        liveData[liveMacCount].rssi_min = 0; 
-        liveData[liveMacCount].rssi_max = -100; 
+        liveData[liveMacCount].rssi_min = 0;
+        liveData[liveMacCount].rssi_max = -100;
     }
-    
+
     // Route the first packet to TX or RX
     if (is_tx) {
       liveData[liveMacCount].tx_bytes = len;
@@ -1360,33 +1342,33 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
       liveData[liveMacCount].tx_bytes = 0;
       liveData[liveMacCount].rx_bytes = len;
     }
-    
+
     liveData[liveMacCount].vendorFound = false;
-    
+
     // --- ADD THESE 3 LINES ---
     liveData[liveMacCount].needs_lookup = true; // Tell Core 1 to check the SD card
-    strncpy((char*)liveData[liveMacCount].vendor, "Resolving...", 27); 
+    strncpy((char*)liveData[liveMacCount].vendor, "Resolving...", 27);
     liveData[liveMacCount].vendor[27] = '\0';
     // -------------------------
 
     liveMacCount++; // Advance the tracker
   } else {
     // If the buffer is full, dump the size into the overflow bucket
-    liveOtherBytes += len; 
+    liveOtherBytes += len;
   }
 }
 static bool is_lldp_multicast(const uint8_t* mac) {
-    return mac && mac[0] == 0x01 && mac[1] == 0x80 && mac[2] == 0xC2 && 
+    return mac && mac[0] == 0x01 && mac[1] == 0x80 && mac[2] == 0xC2 &&
            mac[3] == 0x00 && mac[4] == 0x00 && mac[5] == 0x0E;
 }
 static bool is_cdp_multicast(const uint8_t* mac) {
     // 01:00:0C:CC:CC:CC is the dedicated Cisco CDP/VTP multicast address
-    return mac && mac[0] == 0x01 && mac[1] == 0x00 && mac[2] == 0x0C && 
+    return mac && mac[0] == 0x01 && mac[1] == 0x00 && mac[2] == 0x0C &&
            mac[3] == 0xCC && mac[4] == 0xCC && mac[5] == 0xCC;
 }
 void processLiveDumpQueue() {
     if (liveDumpQueue == NULL) return;
-    
+
     UBaseType_t waiting = uxQueueMessagesWaiting(liveDumpQueue);
     if (waiting >= LIVE_DUMP_QUEUE_DEPTH - 2) {
     Serial.printf(
@@ -1397,11 +1379,11 @@ void processLiveDumpQueue() {
 }
 
     LiveCaptureEvent& live_evt = *ptr_core1_evt;
-    int packets_processed = 0; 
+    int packets_processed = 0;
     // uint32_t start_time = micros(); // disabled with the benchmark print
     static char temp_text[MAX_LEAK_STR_LEN];
     static char eapol_text[MAX_LEAK_STR_LEN];
-    
+
     // FIXED: Short-circuit evaluation order. Check count BEFORE pulling from the queue.
     while (packets_processed < 5 &&
        xQueueReceive(liveDumpQueue, &live_evt, 0) == pdTRUE) {
@@ -1451,12 +1433,12 @@ void processLiveDumpQueue() {
         // =========================================================
         // Reinstated: Guarded strictly by UDP (Protocol 17) to prevent
         // colliding with standard TCP web traffic!
-        if (live_evt.meta.protocol == 17 && 
-            live_evt.raw_len > 15 && 
+        if (live_evt.meta.protocol == 17 &&
+            live_evt.raw_len > 15 &&
             memcmp(live_evt.raw_payload, "HTTP/1.", 7) == 0) {
-            
+
             custom_extracted = parse_ssdp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
-            
+
             // Unicast SSDP replies are pure gold. Elevate immediately!
             if (custom_extracted) {
                 live_evt.meta.is_high_value = true;
@@ -1493,19 +1475,19 @@ void processLiveDumpQueue() {
             else if (is_cdp_multicast(live_evt.meta.dst_mac)) {
                 custom_extracted = parse_cdp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
                 if (custom_extracted) {
-                    live_evt.meta.is_high_value = true; 
+                    live_evt.meta.is_high_value = true;
                 }
             }
             else if (live_evt.meta.ether_type == 0x88CC || is_lldp_multicast(live_evt.meta.dst_mac)) {
                 custom_extracted = parse_lldp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
                 if (custom_extracted) {
-                    live_evt.meta.is_high_value = true; 
+                    live_evt.meta.is_high_value = true;
                 }
             }
             else if (live_evt.meta.dst_port == 67 || live_evt.meta.src_port == 67 ||
          live_evt.meta.dst_port == 68 || live_evt.meta.src_port == 68) {
                 custom_extracted = parse_dhcp_v4(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
-            }            
+            }
             else if (live_evt.meta.dst_port == 546 || live_evt.meta.src_port == 546 ||
          live_evt.meta.dst_port == 547 || live_evt.meta.src_port == 547) {
                 custom_extracted = parse_dhcp_v6(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
@@ -1516,7 +1498,7 @@ void processLiveDumpQueue() {
             else if (live_evt.meta.dst_port == 138 || live_evt.meta.src_port == 138) {
                 custom_extracted = parse_nbds(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
             }
-            else if (live_evt.meta.dst_port == 53 || live_evt.meta.src_port == 53 || 
+            else if (live_evt.meta.dst_port == 53 || live_evt.meta.src_port == 53 ||
                      live_evt.meta.dst_port == 5353 || live_evt.meta.src_port == 5353) {
                 custom_extracted = parse_dns_mdns(live_evt.raw_payload, live_evt.raw_len, live_evt.meta.dst_port == 5353 || live_evt.meta.src_port == 5353, temp_text, MAX_LEAK_STR_LEN);
             }
@@ -1572,14 +1554,14 @@ void processLiveDumpQueue() {
                 custom_extracted = parse_rdp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
                 if (custom_extracted) live_evt.meta.is_high_value = true;
             }
-            else if (live_evt.meta.dst_port == 25 || live_evt.meta.src_port == 25 || 
+            else if (live_evt.meta.dst_port == 25 || live_evt.meta.src_port == 25 ||
                      live_evt.meta.dst_port == 587 || live_evt.meta.src_port == 587) {
                 custom_extracted = parse_smtp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
                 if (custom_extracted) live_evt.meta.is_high_value = true;
             }
             else if (live_evt.meta.dst_port == 445 || live_evt.meta.src_port == 445) {
                 custom_extracted = parse_smb(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
-                if (custom_extracted) live_evt.meta.is_high_value = true; 
+                if (custom_extracted) live_evt.meta.is_high_value = true;
             }
             else if (live_evt.meta.dst_port == 1900 || live_evt.meta.src_port == 1900) {
                 custom_extracted = parse_ssdp(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN);
@@ -1608,14 +1590,14 @@ else if (live_evt.meta.dst_port == 1080 || live_evt.meta.src_port == 1080 ||
         MAX_LEAK_STR_LEN
     );
 }
-            else if (live_evt.meta.protocol == 6 && (live_evt.meta.tcp_flags & 0x02)) { 
-                snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP SYN (Port %d)", live_evt.meta.dst_port); 
-                custom_extracted = true; 
-            } 
-            else if (live_evt.meta.protocol == 6 && (live_evt.meta.tcp_flags & 0x04)) { 
-                snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP RST (Port %d)", live_evt.meta.dst_port); 
-                custom_extracted = true; 
-            } 
+            else if (live_evt.meta.protocol == 6 && (live_evt.meta.tcp_flags & 0x02)) {
+                snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP SYN (Port %d)", live_evt.meta.dst_port);
+                custom_extracted = true;
+            }
+            else if (live_evt.meta.protocol == 6 && (live_evt.meta.tcp_flags & 0x04)) {
+                snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP RST (Port %d)", live_evt.meta.dst_port);
+                custom_extracted = true;
+            }
             else if (live_evt.meta.protocol == 1) {
                 if (!parse_icmpv4(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN)) {
                     snprintf(temp_text, MAX_LEAK_STR_LEN, "ICMPv4: Malformed");
@@ -1637,7 +1619,7 @@ else if (live_evt.meta.dst_port == 1080 || live_evt.meta.src_port == 1080 ||
                     custom_extracted = true;
                 }
             }
-            
+
             // MQTT
             if (!custom_extracted && live_evt.meta.protocol == 6 && (live_evt.meta.src_port == 1883 || live_evt.meta.dst_port == 1883)) {
                 if (parse_mqtt(p, len, temp_text, MAX_LEAK_STR_LEN, live_evt.meta.is_high_value)) {
@@ -1871,7 +1853,7 @@ if (!custom_extracted && eapol_detected) {
         // =========================================================
         if (!custom_extracted && live_evt.raw_len > 0) {
             if (extract_printable_runs(live_evt.raw_payload, live_evt.raw_len, temp_text, MAX_LEAK_STR_LEN, 4, false, "|")) {
-                custom_extracted = true; 
+                custom_extracted = true;
             } else {
                 // [FALLTHROUGH] hex dump disabled (hot-path serial spam)
                 // Serial.printf("[FALLTHROUGH] ip_ver=%u proto=%u src=%u dst=%u eth=0x%04X len=%u | first16: ",
@@ -1955,7 +1937,7 @@ if (custom_extracted) {
         }
     }
 }
-    
+
     // if (packets_processed > 0) {
     //     uint32_t elapsed = micros() - start_time;
     //     Serial.printf("Processed %d packets in %u us\n", packets_processed, elapsed);
@@ -2303,7 +2285,6 @@ void processLeakQueue() {
             ui_needs_update = true;
         }
 
-
         // ==========================================
         // 2. PERSISTENT LIST DEDUPLICATION
         // ==========================================
@@ -2342,7 +2323,6 @@ void processLeakQueue() {
                 break;
             }
         }
-
 
         if (!isDuplicate) {
 
@@ -2443,7 +2423,6 @@ void processLeakQueue() {
         }
     }
 
-
     // ==========================================
     // 8. BATCHED UI REFRESH
     // ==========================================
@@ -2461,12 +2440,12 @@ void processLeakQueue() {
 int compareLeakAge(const void* a, const void* b) {
     LeakHistoryEntry* lA = (LeakHistoryEntry*)a;
     LeakHistoryEntry* lB = (LeakHistoryEntry*)b;
-    
+
     // Push empty slots to the bottom
     if (lA->leak.meta.timestamp == 0 && lB->leak.meta.timestamp == 0) return 0;
     if (lA->leak.meta.timestamp == 0) return 1;
     if (lB->leak.meta.timestamp == 0) return -1;
-    
+
     if (sort_descending) return (lB->leak.meta.timestamp > lA->leak.meta.timestamp) ? 1 : (lB->leak.meta.timestamp < lA->leak.meta.timestamp) ? -1 : 0;
     return (lA->leak.meta.timestamp > lB->leak.meta.timestamp) ? 1 : (lA->leak.meta.timestamp < lB->leak.meta.timestamp) ? -1 : 0;
 }
@@ -2474,11 +2453,11 @@ int compareLeakAge(const void* a, const void* b) {
 int compareLeakLength(const void* a, const void* b) {
     LeakHistoryEntry* lA = (LeakHistoryEntry*)a;
     LeakHistoryEntry* lB = (LeakHistoryEntry*)b;
-    
+
     if (lA->leak.meta.timestamp == 0 && lB->leak.meta.timestamp == 0) return 0;
     if (lA->leak.meta.timestamp == 0) return 1;
     if (lB->leak.meta.timestamp == 0) return -1;
-    
+
     if (sort_descending) return (lB->leak.meta.frame_length > lA->leak.meta.frame_length) ? 1 : (lB->leak.meta.frame_length < lA->leak.meta.frame_length) ? -1 : 0;
     return (lA->leak.meta.frame_length > lB->leak.meta.frame_length) ? 1 : (lA->leak.meta.frame_length < lB->leak.meta.frame_length) ? -1 : 0;
 }
@@ -2486,11 +2465,11 @@ int compareLeakLength(const void* a, const void* b) {
 int compareLeakHits(const void* a, const void* b) {
     LeakHistoryEntry* lA = (LeakHistoryEntry*)a;
     LeakHistoryEntry* lB = (LeakHistoryEntry*)b;
-    
+
     if (lA->leak.meta.timestamp == 0 && lB->leak.meta.timestamp == 0) return 0;
     if (lA->leak.meta.timestamp == 0) return 1;
     if (lB->leak.meta.timestamp == 0) return -1;
-    
+
     if (sort_descending) return (lB->hitCount > lA->hitCount) ? 1 : (lB->hitCount < lA->hitCount) ? -1 : 0;
     return (lA->hitCount > lB->hitCount) ? 1 : (lA->hitCount < lB->hitCount) ? -1 : 0;
 }

@@ -7,11 +7,11 @@
 #define MAX_BSSID_CACHE 16
 #define MAX_LIVE_CAPTURE 1536
 #define LIVE_DUMP_QUEUE_DEPTH 20
-#define LEAK_QUEUE_DEPTH 15   
+#define LEAK_QUEUE_DEPTH 15
 #define MAX_ACTIVE_FLOWS 64
 #define MAX_LEAK_SLOTS 20
-#define LIVE_DUMP_COOLDOWN_MS 30000 
-#define SEC_COOLDOWN_MS 5000 
+#define LIVE_DUMP_COOLDOWN_MS 30000
+#define SEC_COOLDOWN_MS 5000
 #define ALERT_CACHE_SIZE 8
 #define MAX_TERMINAL_LINES 5
 #define MAX_BLE_DEVICES 150
@@ -49,8 +49,8 @@ extern bool sort_descending;
 extern std::atomic<bool> pause_sniffing;
 
 struct FlowRecord {
-    uint32_t flow_hash;       
-    uint32_t first_seen_ms;   
+    uint32_t flow_hash;
+    uint32_t first_seen_ms;
     uint32_t last_seen_ms;
     uint32_t last_printed_ms;
     uint16_t count;
@@ -98,7 +98,7 @@ struct PacketCapture {
 
 struct LeakHistoryEntry {
     PacketCapture leak;           // Uses the unified struct
-    uint32_t first_seen;          // 4 bytes 
+    uint32_t first_seen;          // 4 bytes
     uint32_t flow_hash;           // 4 bytes (Added for tracking Core 1 hits)
     char     src_vendor[16];      // 16 bytes
     char     dst_vendor[16];      // 16 bytes
@@ -123,24 +123,24 @@ struct SSIDNode {
 struct ProbeRecordShared {
   // --- 8-byte variables ---
   uint64_t pnl_hash;        // <--- NEW: 64-bit SSID Bloom Filter
-  
+
   // --- 4-byte variables ---
   uint32_t hardware_hash;   // <--- NEW: 32-bit IE Tag Fingerprint
-  unsigned long first_seen; 
+  unsigned long first_seen;
   unsigned long last_seen;
-  int first_ssid_idx;               
-  float smoothedDistance;   
-  
+  int first_ssid_idx;
+  float smoothedDistance;
+
   // --- 2-byte variables ---
   uint16_t hits;
-  
+
   // --- 1-byte arrays and variables ---
   uint8_t mac[6];
   char vendor[25];
   uint8_t ssid_count;
   uint8_t generation = 0;
   bool needs_lookup = false;
-  int8_t rssi;              
+  int8_t rssi;
   uint8_t mac_rotations;  // Tracks how many times this device has spoofed a new MAC
 };
 
@@ -159,22 +159,22 @@ enum OsintTrackerType : uint8_t {
 
 struct BLERecord {
   // --- 4-Byte Types (Grouped at the top) ---
-  uint32_t firstSeen;       
+  uint32_t firstSeen;
   uint32_t lastSeen;
-  uint32_t hits;          
-  float smoothedDistance; 
+  uint32_t hits;
+  float smoothedDistance;
 
   // --- 2-Byte Types (The string replacements) ---
-  uint16_t appearanceId;    
-  uint16_t serviceId;       
+  uint16_t appearanceId;
+  uint16_t serviceId;
 
   // --- 1-Byte Types & Arrays (Grouped at the bottom) ---
-  uint8_t mac[6];         
-  uint8_t trackerType;      
-  int8_t rssi;               
-  int8_t txPower; 
+  uint8_t mac[6];
+  uint8_t trackerType;
+  int8_t rssi;
+  int8_t txPower;
   uint8_t namePriority;     // <--- ADDED BACK: Protects your Eddystone URLs
-  char name[25];            
+  char name[25];
   char payload[30];
 };
 
@@ -184,20 +184,20 @@ struct ApRecord {
   uint64_t sum_sq_bytes;
 
   // 4-byte types
-  uint32_t first_seen; 
-  uint32_t last_seen;  
+  uint32_t first_seen;
+  uint32_t last_seen;
   uint32_t packets;
   uint32_t tx_bytes;
   uint32_t rx_bytes;
   float smoothedDistance;
 
   // 1-byte types & arrays
-  uint8_t bssid[6];       
+  uint8_t bssid[6];
   uint8_t channel;
   uint8_t max_rate;
   int8_t rssi;
-  int8_t rssi_min;    
-  int8_t rssi_max;    
+  int8_t rssi_min;
+  int8_t rssi_max;
   bool has_clone;     // NEW: O(1) lookup during UI rendering
   char ssid[25];      // Trimmed from 26 to 25 to maintain exactly 80 bytes
   char country[3];
@@ -212,7 +212,7 @@ struct ChannelRecord {
   uint32_t tx_bytes;
   uint32_t rx_bytes;
   uint8_t channel;
-  
+
   // --- The EMA Time-Series Variables ---
   float avg_rssi;     // The moving noise floor
   float ema_variance; // The volatility tracker
@@ -253,16 +253,16 @@ struct BeaconEntry {
 };
 
 // Calculate the memory footprint of each mode
-constexpr size_t wifi_size = sizeof(MacRecord) * MAX_MACS;           
-constexpr size_t ble_size = sizeof(BLERecord) * MAX_BLE_DEVICES;     
-constexpr size_t ap_size = sizeof(ApRecord) * MAX_AP_RECORDS;        
-constexpr size_t channel_size = sizeof(ChannelRecord) * MAX_CHANNEL_RECORDS; 
+constexpr size_t wifi_size = sizeof(MacRecord) * MAX_MACS;
+constexpr size_t ble_size = sizeof(BLERecord) * MAX_BLE_DEVICES;
+constexpr size_t ap_size = sizeof(ApRecord) * MAX_AP_RECORDS;
+constexpr size_t channel_size = sizeof(ChannelRecord) * MAX_CHANNEL_RECORDS;
 constexpr size_t leak_size = sizeof(LeakHistoryEntry) * MAX_LEAK_SLOTS;
 
 // Dynamically determine the true union boundary
 constexpr size_t max_size_1 = (ble_size > wifi_size) ? ble_size : wifi_size;
 constexpr size_t max_size_2 = (ap_size > channel_size) ? ap_size : channel_size;
-constexpr size_t max_size_3 = (leak_size > max_size_1) ? leak_size : max_size_1; 
+constexpr size_t max_size_3 = (leak_size > max_size_1) ? leak_size : max_size_1;
 constexpr size_t union_size = (max_size_3 > max_size_2) ? max_size_3 : max_size_2;
 
 constexpr size_t static_non_union =
@@ -284,7 +284,7 @@ static_assert(union_size >= ap_size, "FATAL: AP array exceeds union boundary.");
 static_assert(union_size >= channel_size, "FATAL: Channel array exceeds union boundary.");
 
 // Persistent OSINT layer budget check
-static_assert(osint_layer_size < 20480, 
+static_assert(osint_layer_size < 20480,
     "FATAL: Persistent OSINT layer exceeds 20KB budget.");
 
 // Total known static allocation

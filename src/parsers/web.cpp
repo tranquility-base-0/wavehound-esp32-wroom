@@ -17,7 +17,7 @@ static bool extract_header(const char* p, uint16_t length, const char* target, c
     for (int i = 0; i <= length - t_len; i++) {
         // Enforce boundary: Header must start at the beginning of the payload OR immediately after a newline
         if (i == 0 || p[i-1] == '\n') {
-            
+
             // Case-insensitive match (e.g., "Host:", "host:", "HOST:")
             bool match = true;
             for (size_t j = 0; j < t_len; j++) {
@@ -30,20 +30,20 @@ static bool extract_header(const char* p, uint16_t length, const char* target, c
                     break;
                 }
             }
-            
+
             if (match) {
                 // Slide past the header name and any subsequent spaces/tabs
                 const char* val_start = &p[i + t_len];
                 while (val_start < p + length && (*val_start == ' ' || *val_start == '\t')) {
                     val_start++;
                 }
-                
+
                 // Read until end of line or end of payload
                 const char* val_end = val_start;
                 while (val_end < p + length && *val_end != '\r' && *val_end != '\n') {
                     val_end++;
                 }
-                
+
                 int copy_len = val_end - val_start;
                 if (copy_len > 0) {
                     copy_len = std::min(copy_len, (int)max_out - 1);
@@ -246,7 +246,7 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
     char issuer_org[64]   = {0};
 
     char san_dns[64]      = {0};
-    char cert_url[64]     = {0}; 
+    char cert_url[64]     = {0};
     char cert_email[64]   = {0};
     char cert_date[32]    = {0};
 
@@ -260,16 +260,16 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
 
     for (uint16_t i = 0; i + 7 < length; i++) {
         // --- 1. X.500 RDN Attributes (OID Prefix: 06 03 55 04 XX) ---
-        if (payload[i] == 0x06 && payload[i+1] == 0x03 && 
+        if (payload[i] == 0x06 && payload[i+1] == 0x03 &&
             payload[i+2] == 0x55 && payload[i+3] == 0x04) {
-            
+
             uint8_t attr_type = payload[i+4];
             uint8_t tag_type  = payload[i+5]; // 0x13 = PrintableString, 0x0C = UTF8String, etc.
             uint8_t str_len   = payload[i+6];
 
             if ((tag_type == 0x13 || tag_type == 0x0C || tag_type == 0x16 || tag_type == 0x14) &&
                 (i + 7 + str_len <= length) && str_len > 0) {
-                
+
                 const uint8_t* str_data = &payload[i + 7];
 
                 switch (attr_type) {
@@ -328,9 +328,9 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
         }
 
         // --- 2. Subject Alternative Name (SAN) (OID: 06 03 55 1D 11) ---
-        if (payload[i] == 0x06 && payload[i+1] == 0x03 && 
+        if (payload[i] == 0x06 && payload[i+1] == 0x03 &&
             payload[i+2] == 0x55 && payload[i+3] == 0x1D && payload[i+4] == 0x11) {
-            
+
             for (uint16_t s = i + 5; s + 2 < length && s < i + 30; s++) {
                 if (payload[s] == 0x82) { // 0x82 is context tag [2] for dNSName
                     uint8_t dlen = payload[s+1];
@@ -345,10 +345,10 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
         }
 
         // --- 3. Extract CA URLs (OCSP/CRL) (Tag 0x86 UniformResourceIdentifier) ---
-        if (!has_cert_url && payload[i] == 0x86 && 
-            payload[i+2] == 'h' && payload[i+3] == 't' && 
+        if (!has_cert_url && payload[i] == 0x86 &&
+            payload[i+2] == 'h' && payload[i+3] == 't' &&
             payload[i+4] == 't' && payload[i+5] == 'p') {
-            
+
             uint8_t url_len = payload[i+1];
             if (i + 2 + url_len <= length) {
                 uint8_t start = (payload[i+6] == 's') ? 10 : 9; // skip http(s)://
@@ -374,7 +374,7 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
             payload[i+8] == 0x01 && payload[i+9] == 0x09 && payload[i+10] == 0x01) {
 
             uint8_t str_len = payload[i+12];
-            
+
             if (i + 13 + str_len <= length && str_len > 0 && str_len < 63) {
                 memcpy(cert_email, &payload[i+13], str_len);
                 cert_email[str_len] = '\0';
@@ -385,19 +385,19 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
         // --- 5. Extract UTCTime (Tag 0x17) ---
         if (!has_date && payload[i] == 0x17 && payload[i+1] == 13) {
             if (i + 14 <= length && payload[i+2] >= '0' && payload[i+2] <= '9') {
-                
+
                 // Peek exactly 15 bytes ahead to see if the "Not After" date is appended
                 if (i + 15 + 14 <= length && payload[i+15] == 0x17 && payload[i+16] == 13 && payload[i+17] >= '0') {
                     // We successfully caught both dates!
-                    snprintf(cert_date, sizeof(cert_date), "20%c%c/%c%c/%c%c-20%c%c/%c%c/%c%c", 
+                    snprintf(cert_date, sizeof(cert_date), "20%c%c/%c%c/%c%c-20%c%c/%c%c/%c%c",
                         payload[i+2], payload[i+3], payload[i+4], payload[i+5], payload[i+6], payload[i+7],
                         payload[i+17], payload[i+18], payload[i+19], payload[i+20], payload[i+21], payload[i+22]);
                     i += 28; // Fast-forward past both date blocks to save CPU cycles
                 } else {
                     // Fallback: We only found the first date
-                    snprintf(cert_date, sizeof(cert_date), "20%c%c/%c%c/%c%c", 
+                    snprintf(cert_date, sizeof(cert_date), "20%c%c/%c%c/%c%c",
                         payload[i+2], payload[i+3], payload[i+4], payload[i+5], payload[i+6], payload[i+7]);
-                    i += 14; 
+                    i += 14;
                 }
                 has_date = true;
             }
@@ -410,7 +410,7 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
 
     // Fail if we didn't find ANY recognizable string
     if (target_host[0] == '\0' && target_org[0] == '\0' && cert_url[0] == '\0' && cert_email[0] == '\0') {
-        return false; 
+        return false;
     }
 
     // Build rich location token if present: " (Spring, Texas US)"
@@ -430,7 +430,7 @@ bool parse_tls_cert(const uint8_t* payload, uint16_t length, char* out_text, siz
     if (has_issuer_cn && strcmp(target_host, issuer_cn) != 0) {
         snprintf(ca_tag, sizeof(ca_tag), " [CA:%s]", issuer_cn);
     }
-    
+
     // Chain together our extra intelligence to save space
     char ext_tag[128] = {0};
     int ext_idx = 0;
@@ -458,7 +458,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
 
     // Minimum captured length required for our fixed-offset ClientHello parsing.
     if (length < 44 || payload == nullptr || out_text == nullptr || max_len <= prefix_len) {
-        return false; 
+        return false;
     }
 
     int32_t start_offset = -1;
@@ -468,10 +468,10 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
     for (uint16_t i = 0; i <= length - 44; i++) {
 
         // Check for TLS Handshake (0x16), Major Version (0x03), Valid Minor Version (0x00-0x04), ClientHello (0x01)
-        if (payload[i] == 0x16 && 
-            payload[i+1] == 0x03 && 
+        if (payload[i] == 0x16 &&
+            payload[i+1] == 0x03 &&
             payload[i+2] <= 0x04 &&   // <-- TIGHTER FILTER: Covers SSL 3.0 through theoretical TLS 1.4
-            payload[i+5] == 0x01) {       
+            payload[i+5] == 0x01) {
 
             uint16_t record_len = ((uint16_t)payload[i+3] << 8) | payload[i+4];
             uint32_t hs_len = ((uint32_t)payload[i+6] << 16) |
@@ -490,7 +490,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
 
             // Passed all physical bounds checks. Lock onto this offset!
             start_offset = i;
-            
+
             // --- STRICT RECORD BOUNDARY ---
             record_end = start_offset + 5 + record_len;
             break;
@@ -500,7 +500,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
     if (start_offset == -1) return false;
 
     // Anchor the 32-bit cursor to the start of the Session ID length byte
-    uint32_t cursor = start_offset + 43; 
+    uint32_t cursor = start_offset + 43;
 
     // 2. Skip Session ID
     if (cursor >= record_end) return false;
@@ -522,13 +522,13 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
     cursor += comp_len;
 
     // 5. Get Extensions Length
-    if (cursor + 2 > record_end) return false; 
+    if (cursor + 2 > record_end) return false;
     uint16_t ext_total_len = ((uint16_t)payload[cursor] << 8) | payload[cursor + 1];
     cursor += 2;
 
     // Explicitly fail if extensions declare a length that bleeds outside the known TLS record
     if (ext_total_len > record_end - cursor) return false;
-    
+
     uint32_t ext_end = cursor + ext_total_len;
 
     // 6. Walk the Extensions List
@@ -541,7 +541,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
         if (ext_len > ext_end - cursor) return false;
 
         if (ext_type == 0x0000) { // Server Name Indication (SNI)
-            
+
             // Validate the SNI list length before reading
             if (ext_len < 2) return false;
             uint16_t list_len = ((uint16_t)payload[cursor] << 8) | payload[cursor + 1];
@@ -561,7 +561,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
 
                 if (name_type == 0x00) { // 0x00 designates a DNS Hostname
                     if (name_len > 0) {
-                        int copy_len = std::min((int)name_len, (int)(max_len - prefix_len - 1)); 
+                        int copy_len = std::min((int)name_len, (int)(max_len - prefix_len - 1));
                         snprintf(out_text, max_len, "%s%.*s", prefix, copy_len, &payload[list_cursor]);
                         return true;
                     }
@@ -570,7 +570,7 @@ bool parse_tls_sni(const uint8_t* payload, uint16_t length, char* out_text, size
             }
             return false; // Found SNI but couldn't resolve string
         }
-        
+
         cursor += ext_len; // Jump to the next extension
     }
 
@@ -614,16 +614,16 @@ bool parse_rdp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
 
     const char* p = (const char*)payload;
     const char* payload_end = p + length;
-    
+
     // The needle is 17 bytes long. Signed int prevents underflow.
-    int max_i = (int)length - 17; 
+    int max_i = (int)length - 17;
 
     // Sliding window to hunt for the routing cookie
     for (int i = 0; i <= max_i; i++) {
         if (memcmp(&p[i], "Cookie: mstshash=", 17) == 0) {
             const char* user_start = &p[i + 17];
             const char* user_end = user_start;
-            
+
             // Read the username until we hit a newline or space
             while (user_end < payload_end && *user_end != '\r' && *user_end != '\n' && *user_end != ' ') {
                 user_end++;
@@ -636,9 +636,9 @@ bool parse_rdp(const uint8_t* payload, uint16_t length, char* out_text, size_t m
             }
         }
     }
-    
+
     // Fallback: It passed the TPKT gate but didn't have a username cookie.
-    // Is it actually an initial Connection Request (X.224 CR)? 
+    // Is it actually an initial Connection Request (X.224 CR)?
     // Byte 5 must be 0xE0 for a Connection Request.
     if (length > 5 && payload[5] == 0xE0) {
         snprintf(out_text, max_len, "RDP Connection Request (No Cookie)");

@@ -6,13 +6,13 @@ int device_current_page = 0;
 const int DEVICES_PER_PAGE = 13; // 9pt font with 18px line spacing fits 13 devices perfectly
 double getSortMetric(MacRecord& record, SortMode mode) {
     switch(mode) {
-        case SORT_TOTAL: 
+        case SORT_TOTAL:
             return (double)(record.tx_bytes + record.rx_bytes);
-        case SORT_TX:    
+        case SORT_TX:
             return (double)record.tx_bytes;
-        case SORT_RX:    
+        case SORT_RX:
             return (double)record.rx_bytes;
-        case SORT_AVG:   
+        case SORT_AVG:
             return (record.packets > 0) ? ((double)record.sum_bytes / record.packets) : 0.0;
         case SORT_CV: {
             if (record.packets == 0) return 0.0;
@@ -25,10 +25,10 @@ double getSortMetric(MacRecord& record, SortMode mode) {
         }
         case SORT_DIST:
             // Swap this to smoothedDistance to use your new EMA filter!
-            return (double)record.smoothedDistance; 
+            return (double)record.smoothedDistance;
         case SORT_AGE:
             // Added the missing case and using the correct timestamp variable
-            return (double)record.last_seen; 
+            return (double)record.last_seen;
     }
     return 0.0;
 }
@@ -40,12 +40,12 @@ void processWifiData() {
 
     // Drain the "Other Bytes" bucket into the historical session
     sessionOtherBytes += liveOtherBytes;
-    
+
     // Sync the Live Buffer into the Historical Session
     for (int i = 0; i < liveMacCount; i++) {
         bool found = false;
         float rawDistance = calculateRfDistance(liveData[i].rssi, 0, RADIO_WIFI_24GHZ);
-        
+
         // A. Inner j loop — session sync + bounds refresh
         for (int j = 0; j < sessionMacCount; j++) {
             if (memcmp(sessionData[j].mac, (void*)liveData[i].mac, 6) == 0) {
@@ -55,10 +55,10 @@ void processWifiData() {
                 sessionData[j].sum_bytes += liveData[i].sum_bytes;
                 sessionData[j].sum_sq_bytes += liveData[i].sum_sq_bytes;
                 sessionData[j].rssi = liveData[i].rssi;
-                
+
                 if (liveData[i].rate > 0) sessionData[j].rate = liveData[i].rate;
                 sessionData[j].last_seen = liveData[i].last_seen;
-                
+
                 // Only stretch the session bounds if the liveData window actually
                 // captured a valid physical transmission (!= 0 and != -100).
                 if (liveData[i].rssi_min != 0) {
@@ -90,7 +90,7 @@ void processWifiData() {
                 sessionMacCount++;
             } else {
                 // Execute LRU Eviction!
-                uint32_t oldestTime = 0xFFFFFFFF; 
+                uint32_t oldestTime = 0xFFFFFFFF;
                 for (int k = 0; k < MAX_MACS; k++) {
                     if (sessionData[k].last_seen < oldestTime) {
                         oldestTime = sessionData[k].last_seen;
@@ -104,7 +104,7 @@ void processWifiData() {
             memcpy((void*)&sessionData[targetIndex], (void*)&liveData[i], sizeof(MacRecord));
             sessionData[targetIndex].smoothedDistance = (rawDistance > 0) ? rawDistance : 0.0;
         }
-    } 
+    }
 
     // Wipe the live buffer clean so the interrupt can refill it
     memset((void*)liveData, 0, sizeof(liveData));
@@ -114,7 +114,7 @@ void processWifiData() {
     // --- FAST INSERTION SORT: WI-FI SNAPSHOT ---
     for (int i = 1; i < sortMacCount; i++) {
         MacRecord key = sortData[i];
-        double key_val = getSortMetric(key, currentSortMode); 
+        double key_val = getSortMetric(key, currentSortMode);
         int j = i - 1;
 
         if (sort_descending) {
@@ -134,7 +134,7 @@ void processWifiData() {
     // --- FAST INSERTION SORT: WI-FI SESSION ---
     for (int i = 1; i < sessionMacCount; i++) {
         MacRecord key = sessionData[i];
-        double key_val = getSortMetric(key, currentSortMode); 
+        double key_val = getSortMetric(key, currentSortMode);
         int j = i - 1;
 
         if (sort_descending) {
@@ -152,7 +152,7 @@ void processWifiData() {
     }
 
     // Calculate "Other" for the live waterfall chart
-    sortOtherBytes = liveOtherBytes; 
+    sortOtherBytes = liveOtherBytes;
     for(int i = 6; i < sortMacCount; i++) {
         sortOtherBytes += (sortData[i].tx_bytes + sortData[i].rx_bytes);
     }

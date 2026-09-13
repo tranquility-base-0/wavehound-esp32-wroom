@@ -157,10 +157,10 @@ void loop() {
     if (_q >= 18) prof_over18++; }
 
   PROF_TIME(processPendingVendors(), prof_pend_us, prof_pend_max, prof_pend_n);
-  runProbeCorrelationEngine(); 
+  runProbeCorrelationEngine();
   PROF_TIME(processLiveDumpQueue(), prof_dump_us, prof_dump_max, prof_dump_n);
   PROF_TIME(processLeakQueue(), prof_leak_us, prof_leak_max, prof_leak_n);
-  
+
   uint16_t t_x = 0, t_y = 0;
   bool should_render = false;
 
@@ -168,7 +168,7 @@ void loop() {
   if (tft.getTouch(&t_x, &t_y)) {
       should_render = handleTouchInputs(t_x, t_y);
   }
-    
+
   // 2. Run the Channel Hopper
   should_render |= updateRadioHopper();
 
@@ -193,7 +193,7 @@ void loop() {
         // Snapshot the bytes for the UI and reset the ISR counter
         capture_bytes_render = capture_bytes_tick;
         capture_bytes_tick = 0;
-        // IF THIS PRINTS '0', THE ISR IS BROKEN. 
+        // IF THIS PRINTS '0', THE ISR IS BROKEN.
         // IF THIS PRINTS '4000', THE CHART GRAPHICS ARE BROKEN.
         Serial.printf("PCAP Tick Vol: %u\n", capture_bytes_render);
     }
@@ -209,9 +209,9 @@ void loop() {
         drawApScanner();
     } else if (currentState == SCREEN_PROBE_TRACKER) {
         drawProbeTracker();
-    } 
+    }
     // Do NOT add SCREEN_LEAK_LIST here. It updates itself asynchronously!
-    
+
     Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
   }
   // ==========================================

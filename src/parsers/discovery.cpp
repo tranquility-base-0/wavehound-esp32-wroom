@@ -55,8 +55,8 @@ uint8_t decodeNetbiosName(const char* encoded, char* decodedName, size_t maxLen)
     // A valid NetBIOS name yields exactly 16 bytes
     if (outIdx == 16) {
         suffix = decodedName[15]; // Grab the 16th byte
-        
-        // NetBIOS pads the name with spaces (0x20). 
+
+        // NetBIOS pads the name with spaces (0x20).
         // We trim them off backwards so it looks clean on the TFT screen.
         int trimIdx = 14;
         while (trimIdx >= 0 && decodedName[trimIdx] == ' ') {
@@ -76,21 +76,21 @@ bool parse_netbios(const uint8_t* payload, uint16_t length, char* out_text, size
     // Byte 12 is the length of the name (always 0x20 or 32 bytes).
     // The A-P encoded string starts at Byte 13.
     if (length >= 45 && payload[12] == 0x20) {
-        
+
         // 1. Safely extract the 32-byte A-P encoded string
         char rawEncodedString[33];
         memcpy(rawEncodedString, &payload[13], 32);
         rawEncodedString[32] = '\0'; // Ensure null-termination
 
         // 2. Decode it using your memory-safe functions
-        char cleanName[17]; 
+        char cleanName[17];
         uint8_t suffixByte = decodeNetbiosName(rawEncodedString, cleanName, sizeof(cleanName));
         const char* serviceType = getNetbiosSuffixStr(suffixByte);
 
         // 3. Format it (Updated to show both)
-        snprintf(out_text, max_len, "NBNS: [%s] -> %s [%s]", 
+        snprintf(out_text, max_len, "NBNS: [%s] -> %s [%s]",
                  rawEncodedString, cleanName, serviceType);
-        return true; 
+        return true;
     }
     return false;
 }
@@ -136,18 +136,18 @@ bool parse_nbds(const uint8_t* payload, uint16_t length, char* out_text, size_t 
                             // "translation" step that was missing.
                             char decoded[17] = {0};
                             uint8_t suffix = decodeNetbiosName(temp, decoded, sizeof(decoded));
-                            
+
                             // ==========================================
                             // NEW "DOUBLE-KEY" PRINTING LOGIC GOES HERE
                             // ==========================================
                             if (decoded[0] != '\0' && !strstr(out_text, decoded) && written < (int)max_len) {
                                 written += snprintf(out_text + written, max_len - written,
-                                                     " [%s] -> %s [%s]", 
+                                                     " [%s] -> %s [%s]",
                                                      temp, decoded, getNetbiosSuffixStr(suffix));
                                 found_any = true;
                             }
                             // ==========================================
-                            
+
                         } else if (!strstr(out_text, temp)) {
                             if (written < (int)max_len) {
                                 written += snprintf(out_text + written, max_len - written, " [%s]", temp);
@@ -200,35 +200,35 @@ char scopes_val[192] = {0};   // was 128 — ONVIF scope lists can carry several
     // --- STEP 2: UI Formatting Assembly ---
     char temp_out[MAX_LEAK_STR_LEN] = {0}; // was 256
     snprintf(temp_out, sizeof(temp_out), "%s:", msg_type);
-    
+
     char chunk[128];
 
     if (found_types) {
         char type_buf[64] = {0};
         const char* type_start = types_val;
-        
+
         char* colon = strchr(types_val, ':');
         if (colon) type_start = colon + 1;
-        
+
         // Bulletproof QName isolation handling all XML whitespace chars
         size_t type_len = strcspn(type_start, " \t\r\n");
         if (type_len >= sizeof(type_buf)) type_len = sizeof(type_buf) - 1;
-        
+
         memcpy(type_buf, type_start, type_len);
         type_buf[type_len] = '\0';
-        
+
         snprintf(chunk, sizeof(chunk), " [Type: %s]", type_buf);
         strncat(temp_out, chunk, sizeof(temp_out) - strlen(temp_out) - 1);
     }
-    
+
     if (found_scopes) {
         const char* prefix = "onvif://www.onvif.org/name/";
         size_t prefix_len = strlen(prefix);
         char* name_ptr = strstr(scopes_val, prefix);
-        
+
         if (name_ptr) {
-            name_ptr += prefix_len; 
-            
+            name_ptr += prefix_len;
+
             char clean_name[32] = {0};
             int idx = 0;
             while (name_ptr[idx] != ' ' && name_ptr[idx] != '\0' && idx < 31) {
@@ -778,11 +778,11 @@ char date[40]          = {0};   // unchanged — RFC1123 dates are ~29 chars, so
 
 bool parse_lldp(const uint8_t* payload, uint16_t length, char* out_buf, size_t max_out) {
     if (!payload || !out_buf || length < 2 || max_out < 8) return false;
-    
+
     out_buf[0] = '\0';
     uint16_t offset = 0;
     size_t pos = 0;
-    
+
     uint8_t mandatory_stage = 0;
     bool have_end = false;
 
@@ -790,7 +790,7 @@ bool parse_lldp(const uint8_t* payload, uint16_t length, char* out_buf, size_t m
     auto append_str = [&](const char* str) -> bool {
         size_t len = strlen(str);
         if (pos >= max_out) return false;
-        
+
         size_t available = max_out - pos - 1; // Reserve 1 byte for '\0'
         if (len > available) return false;
 
@@ -806,11 +806,11 @@ bool parse_lldp(const uint8_t* payload, uint16_t length, char* out_buf, size_t m
     while (length - offset >= 2) {
         uint8_t tlv_type = payload[offset] >> 1;
         uint16_t tlv_len = ((payload[offset] & 0x01) << 8) | payload[offset + 1];
-        
+
         offset += 2;
-        
+
         // Subtraction-safe boundary check
-        if (tlv_len > length - offset) return false; 
+        if (tlv_len > length - offset) return false;
 
         // Enforce strict 1 -> 2 -> 3 ordering for false-positive elimination
         if (tlv_type == 1) {
@@ -827,31 +827,31 @@ bool parse_lldp(const uint8_t* payload, uint16_t length, char* out_buf, size_t m
             have_end = true;
             break;
         }
-        
+
         // Extract High-Information TLVs (Port Desc, Sys Name, Sys Desc)
         if (tlv_type == 4 || tlv_type == 5 || tlv_type == 6) {
             const char* label = (tlv_type == 4) ? "[Port: " : (tlv_type == 5) ? "[Name: " : "[Desc: ";
             size_t label_len = strlen(label);
-            
+
             // Atomic check: Ensure space for label + at least 1 char + "] " + '\0'
-            size_t min_required = label_len + 4; 
-            
+            size_t min_required = label_len + 4;
+
             if (pos < max_out && (max_out - pos) >= min_required) {
                 append_str(label);
-                
+
                 size_t available = max_out - pos - 3; // Reserve space for "] \0"
                 size_t copy_len = std::min((size_t)tlv_len, available);
-                
+
                 for (size_t i = 0; i < copy_len; i++) {
                     uint8_t c = payload[offset + i];
                     out_buf[pos++] = (c >= 32 && c <= 126) ? (char)c : '.';
                 }
                 out_buf[pos] = '\0';
-                
+
                 append_str("] ");
             }
         }
-        
+
         offset += tlv_len;
     }
 
@@ -888,7 +888,7 @@ static bool cdp_checksum_valid(const uint8_t* p, uint16_t length) {
 
 bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t max_out) {
     if (!payload || !out_buf || length < 8 || max_out < 8) return false;
-    
+
     out_buf[0] = '\0';
     uint16_t offset = 0;
     size_t pos = 0;
@@ -896,8 +896,8 @@ bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t ma
     auto append_str = [&](const char* str) -> bool {
         size_t len = strlen(str);
         if (pos >= max_out) return false;
-        
-        size_t available = max_out - pos - 1; 
+
+        size_t available = max_out - pos - 1;
         if (len > available) return false;
 
         memcpy(out_buf + pos, str, len);
@@ -908,7 +908,7 @@ bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t ma
 
     // Skip LLC/SNAP if present (AA AA 03 00 00 0C 20 00)
     if (payload[0] == 0xAA && payload[1] == 0xAA && payload[2] == 0x03) {
-        if (length >= 8 && payload[3] == 0x00 && payload[4] == 0x00 && payload[5] == 0x0C && 
+        if (length >= 8 && payload[3] == 0x00 && payload[4] == 0x00 && payload[5] == 0x0C &&
             payload[6] == 0x20 && payload[7] == 0x00) {
             offset += 8;
         } else {
@@ -918,16 +918,16 @@ bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t ma
 
     // CDP Header Validation (Version, TTL, Checksum)
     if (length - offset < 4) return false;
-    
+
     uint8_t version = payload[offset];
     uint8_t ttl = payload[offset + 1];
-    
+
     if (version != 1 && version != 2) return false;
     if (ttl == 0) return false;
-    
+
     // Strict checksum validation over the CDP frame
     if (!cdp_checksum_valid(payload + offset, length - offset)) return false;
-    
+
     offset += 4;
 
     if (!append_str("CDP: ")) return false;
@@ -936,32 +936,32 @@ bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t ma
     while (length - offset >= 4) {
         uint16_t tlv_type = (payload[offset] << 8) | payload[offset + 1];
         uint16_t tlv_len  = (payload[offset + 2] << 8) | payload[offset + 3];
-        
-        if (tlv_len < 4 || tlv_len > length - offset) return false; 
+
+        if (tlv_len < 4 || tlv_len > length - offset) return false;
 
         uint16_t val_len = tlv_len - 4;
         uint16_t val_offset = offset + 4;
 
         // Expanded OSINT Extraction
-        if (tlv_type == 0x01 || tlv_type == 0x03 || tlv_type == 0x05 || 
+        if (tlv_type == 0x01 || tlv_type == 0x03 || tlv_type == 0x05 ||
             tlv_type == 0x06 || tlv_type == 0x09 || tlv_type == 0x0A || tlv_type == 0x0B) {
-            
-            const char* label = (tlv_type == 0x01) ? "[Dev: " : 
-                                (tlv_type == 0x03) ? "[Port: " : 
-                                (tlv_type == 0x05) ? "[SW: "  : 
+
+            const char* label = (tlv_type == 0x01) ? "[Dev: " :
+                                (tlv_type == 0x03) ? "[Port: " :
+                                (tlv_type == 0x05) ? "[SW: "  :
                                 (tlv_type == 0x06) ? "[Plat: " :
                                 (tlv_type == 0x09) ? "[VTP: " :
                                 (tlv_type == 0x0A) ? "[VLAN: " : "[Duplex: ";
-            
+
             size_t label_len = strlen(label);
-            size_t min_required = label_len + 4; 
-            
+            size_t min_required = label_len + 4;
+
             if (pos < max_out && (max_out - pos) >= min_required) {
                 append_str(label);
-                
-                size_t available = max_out - pos - 3; 
+
+                size_t available = max_out - pos - 3;
                 size_t copy_len = std::min((size_t)val_len, available);
-                
+
                 for (size_t i = 0; i < copy_len; i++) {
                     uint8_t c = payload[val_offset + i];
                     // Sanitize logic now includes tabs
@@ -981,7 +981,7 @@ bool parse_cdp(const uint8_t* payload, uint16_t length, char* out_buf, size_t ma
     // Every byte must belong to a complete TLV sequence
     if (offset != length) return false;
 
-    return (pos > 5); 
+    return (pos > 5);
 }
 
 bool parse_socks(const uint8_t* payload,
@@ -1671,22 +1671,22 @@ bool parse_socks(const uint8_t* payload,
 
 bool parse_dropbox(const uint8_t* payload, uint16_t length, char* out_text, size_t max_len) {
     if (length < 2 || payload[0] != '{') return false; // Must look like JSON
-    
+
     char version[32] = {0};
     char namespaces[64] = {0};
     char displayname[64] = {0};
     char host_int[32] = {0};
-    
+
     bool has_ver = extract_json_val((const char*)payload, length, "version", version, sizeof(version));
     bool has_ns = extract_json_val((const char*)payload, length, "namespaces", namespaces, sizeof(namespaces));
     bool has_name = extract_json_val((const char*)payload, length, "displayname", displayname, sizeof(displayname));
     bool has_host = extract_json_val((const char*)payload, length, "host_int", host_int, sizeof(host_int));
-    
+
     if (!has_ver && !has_ns && !has_name && !has_host) return false;
-    
+
     int written = snprintf(out_text, max_len, "DROPBOX:");
     bool first = true;
-    
+
     if (has_ver) {
         written += snprintf(out_text + written, max_len - written, "%s ver=%s", first ? "" : " |", version);
         first = false;
@@ -1702,7 +1702,7 @@ bool parse_dropbox(const uint8_t* payload, uint16_t length, char* out_text, size
     if (has_host) {
         written += snprintf(out_text + written, max_len - written, "%s host=%s", first ? "" : " |", host_int);
     }
-    
+
     return true;
 }
 
@@ -1710,7 +1710,7 @@ bool parse_ephemeral_upnp(const uint8_t* payload, uint16_t length, char* out_tex
     if (length < 16) return false;
 
     const char* p = (const char*)payload;
-    
+
     // Payload Signature Gate: Only process if it starts like an SSDP response or event
     if (memcmp(p, "HTTP/1.", 7) != 0 && memcmp(p, "NOTIFY ", 7) != 0 && memcmp(p, "M-SEARCH ", 9) != 0) {
         return false;
@@ -1725,7 +1725,7 @@ bool parse_ephemeral_upnp(const uint8_t* payload, uint16_t length, char* out_tex
         if (memcmp(&p[i], "Server: ", 8) == 0) {
             const char* end = &p[i+8];
             while (end < p + length && *end != '\r' && *end != '\n') end++;
-            
+
             int copy_len = std::min((int)(end - (&p[i+8])), 63);
             memcpy(server, &p[i+8], copy_len);
             server[copy_len] = '\0';
@@ -1734,11 +1734,11 @@ bool parse_ephemeral_upnp(const uint8_t* payload, uint16_t length, char* out_tex
         else if (memcmp(&p[i], "Location: ", 10) == 0) {
             const char* end = &p[i+10];
             while (end < p + length && *end != '\r' && *end != '\n') end++;
-            
+
             // Clean up the URL slightly by skipping "http://" if present to save screen space
             int offset = 10;
             if (memcmp(&p[i+10], "http://", 7) == 0) offset = 17;
-            
+
             int copy_len = std::min((int)(end - (&p[i+offset])), 63);
             memcpy(location, &p[i+offset], copy_len);
             location[copy_len] = '\0';
@@ -1756,7 +1756,7 @@ bool parse_ephemeral_upnp(const uint8_t* payload, uint16_t length, char* out_tex
         snprintf(out_text, max_len, "UPnP Loc: %s", location);
         return true;
     }
-    
+
     return false; // Let it fall through to generic text extractors if we didn't find the juicy headers
 }
 

@@ -12,14 +12,14 @@ double getBleSortMetric(BLERecord& record, BleSortMode mode) {
             return (double)record.smoothedDistance;
         case SORT_BLE_AGE:
             // Fixed the variable name to match your struct
-            return (double)record.lastSeen; 
+            return (double)record.lastSeen;
     }
     return 0.0;
 }
 void decodeEddystoneURL(const std::string& sData, char* outBuffer, size_t maxLen) {
     // Ensure we have a valid buffer to write to
     if (maxLen == 0) return;
-    outBuffer[0] = '\0'; 
+    outBuffer[0] = '\0';
 
     // Eddystone frame type 0x10 specifically means "URL"
     if (sData.length() < 3 || sData[0] != 0x10) {
@@ -63,7 +63,7 @@ void decodeEddystoneURL(const std::string& sData, char* outBuffer, size_t maxLen
             outBuffer[idx++] = (char)c;
         }
     }
-    
+
     // Null-terminate the final string
     outBuffer[idx] = '\0';
 }
@@ -74,12 +74,12 @@ void processBleData() {
     for (int i = 0; i < liveBleCount; i++) {
         bool found = false;
         float rawDistance = calculateRfDistance(liveBleData[i].rssi, liveBleData[i].txPower, RADIO_BLE_24GHZ);
-        
+
         for (int j = 0; j < sessionBleCount; j++) {
             if (memcmp(sessionBleData[j].mac, (void*)(uint8_t*)liveBleData[i].mac, 6) == 0) {
                 sessionBleData[j].hits += liveBleData[i].hits;
                 sessionBleData[j].rssi = liveBleData[i].rssi;
-                sessionBleData[j].txPower = liveBleData[i].txPower; 
+                sessionBleData[j].txPower = liveBleData[i].txPower;
                 sessionBleData[j].lastSeen = liveBleData[i].lastSeen;
 
                 if (rawDistance > 0) {
@@ -88,9 +88,9 @@ void processBleData() {
 
                 if (liveBleData[i].name[0] != '\0') {
                     strncpy((char*)sessionBleData[j].name, (char*)liveBleData[i].name, 24);
-                    sessionBleData[j].name[24] = '\0'; 
+                    sessionBleData[j].name[24] = '\0';
                 }
-                
+
                 if (liveBleData[i].trackerType != TRACKER_NONE) sessionBleData[j].trackerType = liveBleData[i].trackerType;
                 if (liveBleData[i].appearanceId != 0) sessionBleData[j].appearanceId = liveBleData[i].appearanceId;
                 if (liveBleData[i].serviceId != 0) sessionBleData[j].serviceId = liveBleData[i].serviceId;
@@ -107,7 +107,7 @@ void processBleData() {
                 targetIndex = sessionBleCount;
                 sessionBleCount++;
             } else {
-                uint32_t oldestTime = 0xFFFFFFFF; 
+                uint32_t oldestTime = 0xFFFFFFFF;
                 for (int k = 0; k < MAX_BLE_DEVICES; k++) {
                     if (sessionBleData[k].lastSeen < oldestTime) {
                         oldestTime = sessionBleData[k].lastSeen;
