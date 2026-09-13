@@ -605,79 +605,79 @@ void drawWaterfallChart() {
 
             int cursor_y = terminal_start_y + 4;
 
-// --- PASS 1: figure out which packets actually fit, newest-first ---
-int drawIdx[MAX_TERMINAL_LINES];
-int drawCount = 0;
-{
-    int scan_y = cursor_y;
-    for (int i = 0; i < MAX_TERMINAL_LINES; i++) {
-        if (terminal_history[i].meta.timestamp == 0) continue;
+            // --- PASS 1: figure out which packets actually fit, newest-first ---
+            int drawIdx[MAX_TERMINAL_LINES];
+            int drawCount = 0;
+            {
+                int scan_y = cursor_y;
+                for (int i = 0; i < MAX_TERMINAL_LINES; i++) {
+                    if (terminal_history[i].meta.timestamp == 0) continue;
 
-        int pLen = strnlen(terminal_history[i].text, MAX_LEAK_STR_LEN);
-        int payload_lines = (pLen > 0) ? ((pLen - 1) / 57) + 1 : 1;
-        if (payload_lines > 9) payload_lines = 9;
-        int needed = 42 + (payload_lines * 14) + 5; // 3 meta rows + payload + margin
+                    int pLen = strnlen(terminal_history[i].text, MAX_LEAK_STR_LEN);
+                    int payload_lines = (pLen > 0) ? ((pLen - 1) / 57) + 1 : 1;
+                    if (payload_lines > 9) payload_lines = 9;
+                    int needed = 42 + (payload_lines * 14) + 5; // 3 meta rows + payload + margin
 
-        if (scan_y + needed > split_y) break;
-        scan_y += needed;
-        drawIdx[drawCount++] = i;
-    }
-}
+                    if (scan_y + needed > split_y) break;
+                    scan_y += needed;
+                    drawIdx[drawCount++] = i;
+                }
+            }
 
-// --- PASS 2: draw them oldest-of-the-kept-set first, for the scroll effect ---
-for (int k = drawCount - 1; k >= 0; k--) {
-    int i = drawIdx[k];
+            // --- PASS 2: draw them oldest-of-the-kept-set first, for the scroll effect ---
+                for (int k = drawCount - 1; k >= 0; k--) {
+                    int i = drawIdx[k];
 
                 // ==========================================
-// LIVE VENDOR LOOKUP — RAM CACHE ONLY
-//
-// IMPORTANT:
-// No leakHistory dependency.
-// No SD access.
-// No vendor resolution.
-// This is strictly an ephemeral fast-path lookup.
-// ==========================================
+                // LIVE VENDOR LOOKUP — RAM CACHE ONLY
+                //
+                // IMPORTANT:
+                // No leakHistory dependency.
+                // No SD access.
+                // No vendor resolution.
+                // This is strictly an ephemeral fast-path lookup.
+                // ==========================================
 
-char srcVend[9] = "";
-char dstVend[9] = "";
+                char srcVend[9] = "";
+                char dstVend[9] = "";
 
-if (!lookupVendorCache(
-        terminal_history[i].meta.src_mac,
-        srcVend,
-        sizeof(srcVend))) {
+                if (!lookupVendorCache(
+                        terminal_history[i].meta.src_mac,
+                        srcVend,
+                        sizeof(srcVend))) {
 
-    strlcpy(srcVend, "Unknown", sizeof(srcVend));
-}
+                    strlcpy(srcVend, "Unknown", sizeof(srcVend));
+                }
 
-if (!lookupVendorCache(
-        terminal_history[i].meta.dst_mac,
-        dstVend,
-        sizeof(dstVend))) {
+                if (!lookupVendorCache(
+                        terminal_history[i].meta.dst_mac,
+                        dstVend,
+                        sizeof(dstVend))) {
 
-    strlcpy(dstVend, "Unknown", sizeof(dstVend));
-}
+                    strlcpy(dstVend, "Unknown", sizeof(dstVend));
+                }
 
                 // --- INLINE FORMATTERS ---
-// 1. Compact Length (Max 4 chars)
-char lenStr[8];
-uint16_t fLen = terminal_history[i].meta.frame_length;
-if (fLen < 1000) snprintf(lenStr, sizeof(lenStr), "%dB", fLen);
-else snprintf(lenStr, sizeof(lenStr), "%dK", fLen / 1000);
+                // 1. Compact Length (Max 4 chars)
+                char lenStr[8];
+                uint16_t fLen = terminal_history[i].meta.frame_length;
+                if (fLen < 1000) snprintf(lenStr, sizeof(lenStr), "%dB", fLen);
+                else snprintf(lenStr, sizeof(lenStr), "%dK", fLen / 1000);
 
-// 2. Safe IPv6 Buffers (40 bytes to prevent overflow)
-char srcIpRaw[40] = {0}, dstIpRaw[40] = {0};
-getIpString(terminal_history[i].meta.ip_version, terminal_history[i].meta.src_ip, srcIpRaw, sizeof(srcIpRaw));
-getIpString(terminal_history[i].meta.ip_version, terminal_history[i].meta.dst_ip, dstIpRaw, sizeof(dstIpRaw));
+                // 2. Safe IPv6 Buffers (40 bytes to prevent overflow)
+                char srcIpRaw[40] = {0}, dstIpRaw[40] = {0};
+                getIpString(terminal_history[i].meta.ip_version, terminal_history[i].meta.src_ip, srcIpRaw, sizeof(srcIpRaw));
+                getIpString(terminal_history[i].meta.ip_version, terminal_history[i].meta.dst_ip, dstIpRaw, sizeof(dstIpRaw));
 
-// 3. IPv6 Compression (RFC 5952 longest-run collapse, replaces old sequential strstr/memmove approach)
-char srcIpStr[40] = {0}, dstIpStr[40] = {0};
-if (terminal_history[i].meta.ip_version == 6) {
-    compress_ipv6(srcIpRaw, srcIpStr, sizeof(srcIpStr));
-    compress_ipv6(dstIpRaw, dstIpStr, sizeof(dstIpStr));
-} else {
-    strncpy(srcIpStr, srcIpRaw, sizeof(srcIpStr) - 1);
-    strncpy(dstIpStr, dstIpRaw, sizeof(dstIpStr) - 1);
-}
+                // 3. IPv6 Compression (RFC 5952 longest-run collapse, replaces old sequential strstr/memmove approach)
+                char srcIpStr[40] = {0}, dstIpStr[40] = {0};
+                if (terminal_history[i].meta.ip_version == 6) {
+                    compress_ipv6(srcIpRaw, srcIpStr, sizeof(srcIpStr));
+                    compress_ipv6(dstIpRaw, dstIpStr, sizeof(dstIpStr));
+                } else {
+                    strncpy(srcIpStr, srcIpRaw, sizeof(srcIpStr) - 1);
+                    strncpy(dstIpStr, dstIpRaw, sizeof(dstIpStr) - 1);
+                }
 
                 // 4. Fast Live Age Calculator (Seconds Resolution)
                 char firstSeenStr[8], lastSeenStr[8], ageCombo[18];
@@ -746,30 +746,30 @@ if (terminal_history[i].meta.ip_version == 6) {
                 cursor_y += 14;
 
                 // --- ROW 4 & 5: PAYLOAD ---
-tft.setTextColor(TFT_GREEN);
+                tft.setTextColor(TFT_GREEN);
 
-int pLen = strnlen(terminal_history[i].text, MAX_LEAK_STR_LEN);
-const int maxChars = 57; // (460-4)/8
-int n_lines = (pLen > 0) ? ((pLen - 1) / maxChars) + 1 : 1;
-if (n_lines > 9) n_lines = 9;
+                int pLen = strnlen(terminal_history[i].text, MAX_LEAK_STR_LEN);
+                const int maxChars = 57; // (460-4)/8
+                int n_lines = (pLen > 0) ? ((pLen - 1) / maxChars) + 1 : 1;
+                if (n_lines > 9) n_lines = 9;
 
-char sanitized[MAX_LEAK_STR_LEN + 1] = {0};
-memcpy(sanitized, terminal_history[i].text, pLen);
-for (int c = 0; c < pLen; c++) {
-    if (sanitized[c] < 32 || sanitized[c] > 126) sanitized[c] = '.';
-}
+                char sanitized[MAX_LEAK_STR_LEN + 1] = {0};
+                memcpy(sanitized, terminal_history[i].text, pLen);
+                for (int c = 0; c < pLen; c++) {
+                    if (sanitized[c] < 32 || sanitized[c] > 126) sanitized[c] = '.';
+                }
 
-for (int line = 0; line < n_lines; line++) {
-    char lineBuf[60] = {0};
-    int offset = line * maxChars;
-    int remaining = pLen - offset;
-    int chunk = (remaining < maxChars) ? remaining : maxChars;
-    strncpy(lineBuf, sanitized + offset, chunk);
-    tft.drawString(lineBuf, 4, cursor_y);
-    cursor_y += 14;
-}
-tft.drawLine(0, cursor_y + 2, 480, cursor_y + 2, COLOR_HOT_CHEST);
-cursor_y += 5;
+                for (int line = 0; line < n_lines; line++) {
+                    char lineBuf[60] = {0};
+                    int offset = line * maxChars;
+                    int remaining = pLen - offset;
+                    int chunk = (remaining < maxChars) ? remaining : maxChars;
+                    strncpy(lineBuf, sanitized + offset, chunk);
+                    tft.drawString(lineBuf, 4, cursor_y);
+                    cursor_y += 14;
+                }
+                tft.drawLine(0, cursor_y + 2, 480, cursor_y + 2, COLOR_HOT_CHEST);
+                cursor_y += 5;
             }
         }
     }

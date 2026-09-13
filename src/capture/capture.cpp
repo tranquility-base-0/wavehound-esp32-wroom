@@ -1202,14 +1202,14 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       strncpy(leak.text, temp_text, MAX_LEAK_STR_LEN - 1);
 
                       if (leakQueue != NULL) {
-    leak_isr_attempts++;
-    pcap_cooldown_total++; // cumulative: bypass candidate accepted (waterfall z)
+                          leak_isr_attempts++;
+                          pcap_cooldown_total++; // cumulative: bypass candidate accepted (waterfall z)
 
-    if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) {
-        leak_isr_dropped++;
-    } else {
-        pcap_upstream_total++; // cumulative: bypass leak accounted for display parity
-    }
+                          if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE) {
+                              leak_isr_dropped++;
+                          } else {
+                              pcap_upstream_total++; // cumulative: bypass leak accounted for display parity
+                      }
 }
                   }
               }
@@ -1838,15 +1838,15 @@ else if (len == 148 &&
         }
 
         // =========================================================
-// --- EAPOL FALLBACK ---
-// If no deeper payload extraction succeeded, preserve the
-// normal EAPOL classification.
-// =========================================================
-if (!custom_extracted && eapol_detected) {
-    strncpy(temp_text, eapol_text, MAX_LEAK_STR_LEN - 1);
-    temp_text[MAX_LEAK_STR_LEN - 1] = '\0';
-    custom_extracted = true;
-}
+        // --- EAPOL FALLBACK ---
+        // If no deeper payload extraction succeeded, preserve the
+        // normal EAPOL classification.
+        // =========================================================
+        if (!custom_extracted && eapol_detected) {
+            strncpy(temp_text, eapol_text, MAX_LEAK_STR_LEN - 1);
+            temp_text[MAX_LEAK_STR_LEN - 1] = '\0';
+            custom_extracted = true;
+        }
 
         // =========================================================
         // --- CATCH-ALL FOR UNKNOWN CLEARTEXT ---
@@ -1867,76 +1867,76 @@ if (!custom_extracted && eapol_detected) {
         }
 
         // ==========================================
-// --- UI ROUTING ---
-// ==========================================
-if (custom_extracted) {
+        // --- UI ROUTING ---
+        // ==========================================
+        if (custom_extracted) {
 
-    // =========================================================
-    // Create the compact persistent/UI object ONLY after parsing
-    // =========================================================
-    PacketCapture pcap;
-    memset(&pcap, 0, sizeof(PacketCapture));
+            // =========================================================
+            // Create the compact persistent/UI object ONLY after parsing
+            // =========================================================
+            PacketCapture pcap;
+            memset(&pcap, 0, sizeof(PacketCapture));
 
-    // Copy packet metadata from the full-payload transport event
-    pcap.meta = live_evt.meta;
+            // Copy packet metadata from the full-payload transport event
+            pcap.meta = live_evt.meta;
 
-    // =========================================================
-    // Copy parsed text into persistent storage.
-    // MAX_LEAK_STR_LEN includes the terminating NUL.
-    // =========================================================
-    size_t text_len = strnlen(temp_text, MAX_LEAK_STR_LEN - 1);
+            // =========================================================
+            // Copy parsed text into persistent storage.
+            // MAX_LEAK_STR_LEN includes the terminating NUL.
+            // =========================================================
+            size_t text_len = strnlen(temp_text, MAX_LEAK_STR_LEN - 1);
 
-    pcap.retained_len = (uint16_t)text_len; // <--- INJECT THIS LINE
+            pcap.retained_len = (uint16_t)text_len; // <--- INJECT THIS LINE
 
-    memcpy(pcap.text, temp_text, text_len);
-    pcap.text[text_len] = '\0';
+            memcpy(pcap.text, temp_text, text_len);
+            pcap.text[text_len] = '\0';
 
-    // =========================================================
-    // High-Value Triage
-    // =========================================================
-    if (strcasestr(temp_text, "M-SEARCH") ||
-        strcasestr(temp_text, "HTTP/1.") ||
-        strcasestr(temp_text, "spotify") ||
-        strcasestr(temp_text, "cast") ||
-        strcasestr(temp_text, "bearer ") ||
-        strcasestr(temp_text, "token=") ||
-        strcasestr(temp_text, "password=") ||
-        strcasestr(temp_text, "pwd=") ||
-        strcasestr(temp_text, "user=") ||
-        strcasestr(temp_text, "login=") ||
-        strcasestr(temp_text, "login:") ||
-        strcasestr(temp_text, "/admin") ||
-        strcasestr(temp_text, "rtsp://") ||
-        strcasestr(temp_text, "tasmota")) {
+            // =========================================================
+            // High-Value Triage
+            // =========================================================
+            if (strcasestr(temp_text, "M-SEARCH") ||
+                strcasestr(temp_text, "HTTP/1.") ||
+                strcasestr(temp_text, "spotify") ||
+                strcasestr(temp_text, "cast") ||
+                strcasestr(temp_text, "bearer ") ||
+                strcasestr(temp_text, "token=") ||
+                strcasestr(temp_text, "password=") ||
+                strcasestr(temp_text, "pwd=") ||
+                strcasestr(temp_text, "user=") ||
+                strcasestr(temp_text, "login=") ||
+                strcasestr(temp_text, "login:") ||
+                strcasestr(temp_text, "/admin") ||
+                strcasestr(temp_text, "rtsp://") ||
+                strcasestr(temp_text, "tasmota")) {
 
-        pcap.meta.is_high_value = true;
+                pcap.meta.is_high_value = true;
 
-       // if (leakQueue != NULL) {
-       //     leak_core1_attempts++;
+               // if (leakQueue != NULL) {
+               //     leak_core1_attempts++;
 
-       // if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
-       //     leak_core1_dropped++;
-       // }
-     //}
-   }
+               // if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
+               //     leak_core1_dropped++;
+               // }
+             //}
+           }
 
-    // =========================================================
-    // Copy final parsed text into the compact UI union
-    // =========================================================
-    //strncpy(pcap.text, temp_text, MAX_LEAK_STR_LEN - 1);
-    //pcap.text[MAX_LEAK_STR_LEN - 1] = '\0';
+            // =========================================================
+            // Copy final parsed text into the compact UI union
+            // =========================================================
+            //strncpy(pcap.text, temp_text, MAX_LEAK_STR_LEN - 1);
+            //pcap.text[MAX_LEAK_STR_LEN - 1] = '\0';
 
-    // =========================================================
-    // Send compact object to the UI/history pipeline
-    // =========================================================
-    if (leakQueue != NULL) {
-        leak_core1_attempts++;
+            // =========================================================
+            // Send compact object to the UI/history pipeline
+            // =========================================================
+            if (leakQueue != NULL) {
+                leak_core1_attempts++;
 
-        if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
-            leak_core1_dropped++;
+                if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
+                    leak_core1_dropped++;
+                }
+            }
         }
-    }
-}
 
     // if (packets_processed > 0) {
     //     uint32_t elapsed = micros() - start_time;
