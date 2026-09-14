@@ -2544,7 +2544,7 @@ void processLeakQueue() {
             incoming_score = strlen(incomingLeak.text);
           if (incomingLeak.meta.is_high_value)
             incoming_score += 300;
-          incoming_score += incoming_diversity_bonus(incomingLeak);
+          incoming_score += 2 * incoming_diversity_bonus(incomingLeak);
 
           if (incoming_score > min_score) {
             targetIndex = victim_idx;
