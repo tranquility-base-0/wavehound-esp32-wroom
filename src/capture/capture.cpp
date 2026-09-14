@@ -2204,7 +2204,20 @@ static void hsort_u32(uint32_t *a, int n) {
   }
 }
 
-static int incoming_diversity_bonus(const PacketCapture &incoming) {
+struct DivMatch {
+  int sim256;  // max trigram Jaccard similarity, 0..256 (256 = identical sets)
+  int best_j;  // retained slot index of the most-similar entry (-1 if none)
+};
+
+// Near-duplicate policy: sim256 >= DIV_NEAR_DUP_SIM256 (~0.85 Jaccard)
+// marks a candidate as a near-duplicate of its nearest retained entry.
+static const int DIV_NEAR_DUP_SIM256 = 218;
+
+// A near-duplicate must beat its representative by this margin
+// (retained-length + high-value points) to replace it.
+static const int DIV_MATERIALLY_BETTER = 64;
+
+static DivMatch incoming_diversity_match(const PacketCapture &incoming) {
   // Transient stack scratch, bounded to the first 128 trigrams (130 text
   // bytes) of each text — 2 x 128 x 4 = 1 KiB of stack instead of 4 KiB.
   // Longer texts are scored on their bounded prefix: near-duplicate
@@ -2212,6 +2225,7 @@ static int incoming_diversity_bonus(const PacketCapture &incoming) {
   // preserves the intended Jaccard behavior for realistic inputs while
   // keeping loopTask stack usage safe (Step 7C).
   static const int DIV_TRIGRAM_BOUND = 128;
+
   uint32_t keys_a[DIV_TRIGRAM_BOUND];
   uint32_t keys_b[DIV_TRIGRAM_BOUND];
 
@@ -2240,6 +2254,7 @@ static int incoming_diversity_bonus(const PacketCapture &incoming) {
 
   int best_inter = 0; // max similarity = best_inter / best_union
   int best_union = 0;
+  int best_j = -1; // retained slot of the most-similar entry
 
   for (int j = 0; j < MAX_LEAK_SLOTS; ++j) {
     if (leakHistory[j].leak.meta.timestamp == 0)
@@ -2276,12 +2291,18 @@ static int incoming_diversity_bonus(const PacketCapture &incoming) {
     if (best_union == 0 || inter * best_union > best_inter * un) {
       best_inter = inter;
       best_union = un;
+      best_j = j;
     }
   }
 
   if (best_union == 0)
-    return 256; // nothing comparable -> fully novel
-  return 256 - (256 * best_inter) / best_union;
+    return {256, -1}; // nothing comparable -> fully novel
+  return {256 - (256 * best_inter) / best_union, best_j};
+}
+
+// Existing novelty term (0..256, 256 = fully novel), derived from the match.
+static inline int incoming_diversity_bonus(const PacketCapture &incoming) {
+  return 256 - incoming_diversity_match(incoming).sim256;
 }
 
 void processLeakQueue() {
@@ -2451,6 +2472,19 @@ void processLeakQueue() {
       //    Only decides whether it also gets a
       //    permanent slot in leakHistory.
       // ==========================================
+      // Shared quality score: retained length (with strlen fallback) plus the
+      // high-value bonus. Used for BOTH victim selection and the
+      // near-duplicate representative comparison so the definitions cannot
+      // drift.
+      auto score_of = [](const PacketCapture &leak) {
+        int score = leak.retained_len;
+        if (score == 0)
+          score = strlen(leak.text);
+        if (leak.meta.is_high_value)
+          score += 300;
+        return score;
+      };
+
       int targetIndex = -1;
 
       for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
@@ -2461,38 +2495,53 @@ void processLeakQueue() {
       }
 
       if (targetIndex == -1) {
-        int victim_idx = 0;
-        int min_score = INT_MAX;
-        uint32_t oldest_time = UINT32_MAX;
+        // Near-duplicate gate: a candidate similar to a retained entry
+        // (>= ~0.85 Jaccard) competes only against that representative and
+        // replaces it only if materially better (length + high-value; the
+        // novelty bonus is intentionally excluded here). A near-duplicate
+        // that fails the margin is rejected from the persistent list.
+        DivMatch dm = incoming_diversity_match(incomingLeak);
 
-        for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
-          int score = leakHistory[i].leak.retained_len;
-          if (score == 0)
-            score = strlen(leakHistory[i].leak.text);
-          if (leakHistory[i].leak.meta.is_high_value)
-            score += 300;
+        if (dm.sim256 >= DIV_NEAR_DUP_SIM256 &&
+            dm.best_j >= 0 && dm.best_j < MAX_LEAK_SLOTS) {
+          int rep_score = score_of(leakHistory[dm.best_j].leak);
+          int in_score = score_of(incomingLeak);
+          if (in_score > rep_score + DIV_MATERIALLY_BETTER) {
+            targetIndex = dm.best_j; // replace the representative in place
+          }
+          // else: not materially better -> candidate stays out of the list
+        } else {
+          // Novel candidate: existing behavior — global minimum-score victim
+          // selection, then the strict admission gate with the novelty bonus.
+          int victim_idx = 0;
+          int min_score = INT_MAX;
+          uint32_t oldest_time = UINT32_MAX;
 
-          if (score < min_score) {
-            min_score = score;
-            victim_idx = i;
-            oldest_time = leakHistory[i].first_seen;
-          } else if (score == min_score) {
-            if (leakHistory[i].first_seen < oldest_time) {
+          for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
+            int score = score_of(leakHistory[i].leak);
+
+            if (score < min_score) {
+              min_score = score;
               victim_idx = i;
               oldest_time = leakHistory[i].first_seen;
+            } else if (score == min_score) {
+              if (leakHistory[i].first_seen < oldest_time) {
+                victim_idx = i;
+                oldest_time = leakHistory[i].first_seen;
+              }
             }
           }
-        }
 
-        int incoming_score = incomingLeak.retained_len;
-        if (incoming_score == 0)
-          incoming_score = strlen(incomingLeak.text);
-        if (incomingLeak.meta.is_high_value)
-          incoming_score += 300;
-        incoming_score += incoming_diversity_bonus(incomingLeak);
+          int incoming_score = incomingLeak.retained_len;
+          if (incoming_score == 0)
+            incoming_score = strlen(incomingLeak.text);
+          if (incomingLeak.meta.is_high_value)
+            incoming_score += 300;
+          incoming_score += incoming_diversity_bonus(incomingLeak);
 
-        if (incoming_score > min_score) {
-          targetIndex = victim_idx;
+          if (incoming_score > min_score) {
+            targetIndex = victim_idx;
+          }
         }
       }
 
