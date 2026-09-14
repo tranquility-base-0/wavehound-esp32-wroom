@@ -842,15 +842,18 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                   // ==========================================
                   if (next_header == 0 && body_len > ip_header_len + 8) {
                       // The first byte of the extension is the TRUE protocol (e.g., 17 for UDP)
-                      next_header = frame_body[ip_header_len];
+                      uint8_t inner_header = frame_body[ip_header_len];
 
                       // Length is calculated as (Byte[1] + 1) * 8
                       uint8_t ext_len_modifier = frame_body[ip_header_len + 1];
                       uint16_t total_ext_len = (ext_len_modifier + 1) * 8;
 
-                      // Safely advance the IP header boundary to step over the extension
+                      // Commit BOTH the advanced boundary and the inner protocol
+                      // only if the complete extension fits within the capture;
+                      // otherwise the truncated extension is treated as unknown.
                       if (body_len > ip_header_len + total_ext_len) {
                           ip_header_len += total_ext_len;
+                          next_header = inner_header;
                       }
                   }
                   // ==========================================
@@ -873,6 +876,8 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
                       if (body_len > (ip_header_len + tcp_header_len)) {
                           frame_body += (ip_header_len + tcp_header_len);
                           body_len -= (ip_header_len + tcp_header_len);
+                      } else {
+                          body_len = 0; // Truncated TCP header (incl. options): no application payload
                       }
                   } else if (next_header == 58 && body_len > ip_header_len) {
                       // --- ICMPv6 (58) ---
@@ -1121,6 +1126,11 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
           uint8_t header_len = 24;          // Base MAC Header
           if (to_ds && from_ds) header_len += 6; // Address 4 present (WDS Bridge)
+
+          // --- SAFE QOS OFFSET (mirrors the plaintext extractor above) ---
+          // Save the exact location of the QoS Control field before HT Control shifts the header length!
+          uint8_t qos_offset = header_len;
+
           if (is_qos) header_len += 2;           // QoS Control present
           if (has_ht_ctrl) header_len += 4;      // HT Control present
           // ---------------------------------------
@@ -1133,7 +1143,7 @@ void sniffer_callback(void* buf, wifi_promiscuous_pkt_type_t type) {
 
               char tid_str[16] = {0};
               if (is_qos) {
-                  uint8_t tid = payload[header_len - 2] & 0x0F;
+                  uint8_t tid = payload[qos_offset] & 0x0F;
                   snprintf(tid_str, sizeof(tid_str), "[TID:%d] ", tid);
               }
 
