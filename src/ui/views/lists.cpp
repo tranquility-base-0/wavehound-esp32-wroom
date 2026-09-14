@@ -313,6 +313,58 @@ void drawApScanner() {
     }
   }
 }
+// Shared dynamic PCAP pagination (declared in lists.h): gathers occupied
+// leakHistory entries (the same timestamp>0 predicate the renderer uses) and
+// packs them into pages by rendered height. Used by BOTH drawDeviceList() and
+// the touch handler so the drawn NEXT -> button and the NEXT touch gate agree.
+PcapPagination computePcapPagination(int *valid_indices,
+                                            int &valid_count,
+                                            int &total_pages) {
+  PcapPagination pp;
+  memset(pp.page_starts, 0, sizeof(pp.page_starts));
+  total_pages = 0;
+  valid_count = 0;
+
+  // --- 1. GATHER LOGICAL ENTRIES ---
+  for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
+    if (leakHistory[i].leak.meta.timestamp > 0) {
+      valid_indices[valid_count++] = i;
+    }
+  }
+
+  // --- 2. DYNAMIC PCAP "SNUG" PACKING ---
+  const int maxChars = 58;
+  int test_y = 32;
+
+  for (int v = 0; v < valid_count; v++) {
+    int idx = valid_indices[v];
+    int pLen = leakHistory[idx].leak.retained_len;
+
+    // FRIEND'S FIX: Defensive clamping for the packing math
+    if (pLen > MAX_LEAK_STR_LEN - 1)
+      pLen = MAX_LEAK_STR_LEN - 1;
+
+    // Dynamically scale up to 9 lines (512 bytes / 58 chars)
+    int n_lines = (pLen > 0) ? ((pLen - 1) / maxChars) + 1 : 1;
+    if (n_lines > 9)
+      n_lines = 9;
+
+    int item_h = 42 + (n_lines * 14) + 5;
+
+    if (test_y + item_h > 290) {
+      if (total_pages < MAX_LEAK_SLOTS - 1) { // Prevents out-of-bounds on page_starts
+        total_pages++;
+        pp.page_starts[total_pages] = v;
+      }
+      test_y = 32 + item_h;
+    } else {
+      test_y += item_h;
+    }
+  }
+
+  return pp;
+}
+
 void drawDeviceList() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextDatum(TL_DATUM);
@@ -345,46 +397,15 @@ void drawDeviceList() {
   int valid_count = 0;
 
   if (currentRadioMode == RADIO_PCAP) {
-      // --- 1. GATHER LOGICAL ENTRIES ---
-      for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
-          if (leakHistory[i].leak.meta.timestamp > 0) {
-              valid_indices[valid_count++] = i;
-          }
-      }
-
-      // --- 2. DYNAMIC PCAP "SNUG" PACKING ---
-      const int maxChars = 58;
-      int page_starts[MAX_LEAK_SLOTS] = {0}; // FRIEND'S FIX: Eliminated the arbitrary 15
       int total_pages = 0;
-      int test_y = 32;
-
-      for (int v = 0; v < valid_count; v++) {
-          int idx = valid_indices[v];
-          int pLen = leakHistory[idx].leak.retained_len;
-
-          // FRIEND'S FIX: Defensive clamping for the packing math
-          if (pLen > MAX_LEAK_STR_LEN - 1) pLen = MAX_LEAK_STR_LEN - 1;
-
-          // Dynamically scale up to 9 lines (512 bytes / 58 chars)
-          int n_lines = (pLen > 0) ? ((pLen - 1) / maxChars) + 1 : 1;
-          if (n_lines > 9) n_lines = 9;
-
-          int item_h = 42 + (n_lines * 14) + 5;
-
-          if (test_y + item_h > 290) {
-              if (total_pages < MAX_LEAK_SLOTS - 1) { // Prevents out-of-bounds on page_starts
-                  total_pages++;
-                  page_starts[total_pages] = v;
-              }
-              test_y = 32 + item_h;
-          } else {
-              test_y += item_h;
-          }
-      }
+      PcapPagination pp = computePcapPagination(valid_indices, valid_count,
+                                                total_pages);
 
       if (device_current_page > total_pages) device_current_page = total_pages;
-      start_idx = page_starts[device_current_page];
-      end_idx = (device_current_page < total_pages) ? page_starts[device_current_page + 1] : valid_count;
+      start_idx = pp.page_starts[device_current_page];
+      end_idx = (device_current_page < total_pages)
+                    ? pp.page_starts[device_current_page + 1]
+                    : valid_count;
       has_next_page = (device_current_page < total_pages);
 
   } else {

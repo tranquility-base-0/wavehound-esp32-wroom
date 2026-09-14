@@ -602,19 +602,28 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // B. FOOTER NAVIGATION (Y >= 294)
       // ==========================================
       else if (t_y >= 294) {
-        // --- ADDED PCAP PAGINATION MATH ---
-        int items_per_page = (currentRadioMode == RADIO_PCAP) ? 3 : 7;
+        // --- PAGINATION MATH ---
+        // PCAP uses the shared dynamic pagination (rendered-height packing) so
+        // the NEXT gate matches the drawn NEXT -> button exactly. Other modes
+        // keep the fixed 7-per-page grid.
+        int items_per_page = 7;
         int total_devices = 0;
+        int total_pages = 0;
 
         if (currentRadioMode == RADIO_WIFI) total_devices = sessionMacCount;
         else if (currentRadioMode == RADIO_BLE) total_devices = sessionBleCount;
         else if (currentRadioMode == RADIO_AP) total_devices = sessionApCount;
         else if (currentRadioMode == RADIO_CHANNELS) total_devices = sessionChannelCount;
         else if (currentRadioMode == RADIO_PCAP) {
-            for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
-                if (leakHistory[i].hitCount > 0) total_devices++;
-            }
+            int valid_indices[MAX_LEAK_SLOTS];
+            int valid_count = 0;
+            computePcapPagination(valid_indices, valid_count, total_pages);
+            total_devices = valid_count;
         }
+
+        bool has_next_page = (currentRadioMode == RADIO_PCAP)
+                                 ? (device_current_page < total_pages)
+                                 : (((device_current_page + 1) * items_per_page) < total_devices);
 
         // 1. PREV PAGE
         if (t_x < 160 && device_current_page > 0) {
@@ -623,7 +632,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           delay(250);
         }
         // 2. NEXT PAGE
-        else if (t_x > 320 && ((device_current_page + 1) * items_per_page) < total_devices) {
+        else if (t_x > 320 && has_next_page) {
           device_current_page++;
           drawDeviceList();
           delay(250);
