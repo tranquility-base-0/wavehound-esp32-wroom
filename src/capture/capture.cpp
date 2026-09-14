@@ -1536,7 +1536,19 @@ void processLiveDumpQueue() {
     }
     // The entire chain is guarded so the SSDP bypass isn't overwritten
     if (!custom_extracted) {
-      if (live_evt.meta.ether_type == 0x0806) {
+      // Bare TCP control frames: classify by flags BEFORE any port-based
+      // application parser can claim them.
+      if (live_evt.meta.protocol == 6 && live_evt.raw_len == 0 &&
+          (live_evt.meta.tcp_flags & 0x02)) {
+        snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP SYN (Port %d)",
+                 live_evt.meta.dst_port);
+        custom_extracted = true;
+      } else if (live_evt.meta.protocol == 6 && live_evt.raw_len == 0 &&
+                 (live_evt.meta.tcp_flags & 0x04)) {
+        snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP RST (Port %d)",
+                 live_evt.meta.dst_port);
+        custom_extracted = true;
+      } else if (live_evt.meta.ether_type == 0x0806) {
         custom_extracted = parse_arp(live_evt.raw_payload, live_evt.raw_len,
                                      temp_text, MAX_LEAK_STR_LEN);
       } else if (live_evt.meta.ether_type == 0x888E) {
@@ -1681,16 +1693,6 @@ void processLiveDumpQueue() {
                  live_evt.meta.src_port == 9050) {
         custom_extracted = parse_socks(live_evt.raw_payload, live_evt.raw_len,
                                        temp_text, MAX_LEAK_STR_LEN);
-      } else if (live_evt.meta.protocol == 6 &&
-                 (live_evt.meta.tcp_flags & 0x02)) {
-        snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP SYN (Port %d)",
-                 live_evt.meta.dst_port);
-        custom_extracted = true;
-      } else if (live_evt.meta.protocol == 6 &&
-                 (live_evt.meta.tcp_flags & 0x04)) {
-        snprintf(temp_text, MAX_LEAK_STR_LEN, "TCP RST (Port %d)",
-                 live_evt.meta.dst_port);
-        custom_extracted = true;
       } else if (live_evt.meta.protocol == 1) {
         if (!parse_icmpv4(live_evt.raw_payload, live_evt.raw_len, temp_text,
                           MAX_LEAK_STR_LEN)) {
