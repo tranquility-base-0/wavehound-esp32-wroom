@@ -2312,7 +2312,14 @@ void processLeakQueue() {
   PacketCapture incomingLeak;
   bool ui_needs_update = false;
 
-  while (xQueueReceive(leakQueue, &incomingLeak, 0) == pdTRUE) {
+  // Bounded batch (mirrors processLiveDumpQueue's 5-per-call pattern): a
+  // backlog accumulated during a ~230 ms waterfall redraw is drained over
+  // successive loop() iterations instead of monopolizing one iteration with
+  // a burst of blocking CLRTXT Serial output.
+  int packets_processed = 0;
+  while (packets_processed < 5 &&
+         xQueueReceive(leakQueue, &incomingLeak, 0) == pdTRUE) {
+    packets_processed++;
 
     // ==========================================
     // 0. TOKEN EXPANSION
