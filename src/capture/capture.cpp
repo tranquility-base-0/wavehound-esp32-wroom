@@ -1332,6 +1332,9 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     client_mac = addr1; // mac1
   } else if (to_ds && !from_ds) {
     client_mac = addr2; // mac2
+  } else if (to_ds && from_ds && len >= 30) {
+    // WDS: addr4 is the true source endpoint; addr2 is the transmitting bridge.
+    client_mac = payload + 24;
   }
 
   // 5. Handle Broadcasts and Multicasts
