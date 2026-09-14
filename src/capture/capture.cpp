@@ -1463,8 +1463,15 @@ void processLiveDumpQueue() {
   if (liveDumpQueue == NULL)
     return;
 
+  // Throttle: at most one warning per 3 s (matches the DIAG cadence).
+  // Unsigned subtraction is wraparound-safe.
+  static uint32_t last_queue_warn_ms = 0;
+  uint32_t now_ms = millis();
+
   UBaseType_t waiting = uxQueueMessagesWaiting(liveDumpQueue);
-  if (waiting >= LIVE_DUMP_QUEUE_DEPTH - 2) {
+  if (waiting >= LIVE_DUMP_QUEUE_DEPTH - 2 &&
+      now_ms - last_queue_warn_ms > 3000) {
+    last_queue_warn_ms = now_ms;
     Serial.printf("WARNING: Queue backing up! (%u/%u waiting)\n",
                   (unsigned)waiting, (unsigned)LIVE_DUMP_QUEUE_DEPTH);
   }
