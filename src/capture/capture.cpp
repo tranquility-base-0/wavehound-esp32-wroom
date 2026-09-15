@@ -2217,6 +2217,21 @@ static const int DIV_NEAR_DUP_SIM256 = 218;
 // (retained-length + high-value points) to replace it.
 static const int DIV_MATERIALLY_BETTER = 64;
 
+// Age penalty: entries that have not been re-seen recently become
+// progressively easier to evict. One penalty point per AGE_PENALTY_STEP_MS
+// of staleness (based on last-seen), capped at AGE_PENALTY_MAX so age can
+// never by itself outweigh the +300 high-value bonus.
+static const int AGE_PENALTY_WEIGHT = 1;
+static const uint32_t AGE_PENALTY_STEP_MS = 60000; // 1 minute per step
+static const int AGE_PENALTY_MAX = 300;
+
+// How strongly a retained entry's redundancy (max similarity to another
+// retained entry, 0..256) counts against it during victim selection.
+// 1 = a fully-redundant entry loses up to 256 protection points (~half a
+// typical text length); keep <= 2 so redundancy cannot dominate the +300
+// high-value bonus.
+static const int REDUNDANCY_WEIGHT = 15;
+
 static DivMatch incoming_diversity_match(const PacketCapture &incoming) {
   // Transient stack scratch, bounded to the first 128 trigrams (130 text
   // bytes) of each text — 2 x 128 x 4 = 1 KiB of stack instead of 4 KiB.
@@ -2303,6 +2318,95 @@ static DivMatch incoming_diversity_match(const PacketCapture &incoming) {
 // Existing novelty term (0..256, 256 = fully novel), derived from the match.
 static inline int incoming_diversity_bonus(const PacketCapture &incoming) {
   return 256 - incoming_diversity_match(incoming).sim256;
+}
+
+// Redundancy of a RETAINED entry: its max trigram Jaccard similarity
+// (0..256) to any OTHER occupied retained entry. Used to make redundant
+// entries more evictable (REDUNDANCY_WEIGHT in the victim-selection score).
+// Max (not average) is the correct measure: an entry is redundant if it has
+// a near-twin, regardless of its similarity to the rest of the set.
+static int retained_redundancy_score(const PacketCapture &leak, int self_idx) {
+  // Same 2 x 128 x 4 = 1 KiB stack-scratch pattern as
+  // incoming_diversity_match(); identical bounded 130-byte prefix.
+  static const int DIV_TRIGRAM_BOUND = 128;
+  uint32_t keys_a[DIV_TRIGRAM_BOUND];
+  uint32_t keys_b[DIV_TRIGRAM_BOUND];
+
+  // Same stack probes as the incoming scorer so headroom stays observable
+  // from this (equally deep) frame.
+  g_div_stack_highwater = uxTaskGetStackHighWaterMark(NULL);
+  volatile uint32_t probe_anchor = 0;
+  g_div_stack_free_now =
+      (uint32_t)&probe_anchor - (uint32_t)pxTaskGetStackStart(NULL);
+
+  // Build the reference set once (the entry being scored).
+  int la = tri_text_len(leak.text);
+  int na = (la >= 3) ? (la - 2) : 0;
+  if (na > DIV_TRIGRAM_BOUND)
+    na = DIV_TRIGRAM_BOUND;
+  for (int i = 0; i < na; ++i)
+    keys_a[i] = trigram_code(leak.text, i);
+  if (na > 0)
+    hsort_u32(keys_a, na);
+  int ua = 0;
+  for (int i = 0; i < na; ++i)
+    if (i == 0 || keys_a[i] != keys_a[i - 1])
+      keys_a[ua++] = keys_a[i];
+
+  int best_inter = 0;
+  int best_union = 0;
+
+  // Early out: fewer than 2 occupied entries -> nothing to be redundant with.
+  int occupied = 0;
+  for (int j = 0; j < MAX_LEAK_SLOTS && occupied < 2; ++j)
+    if (leakHistory[j].leak.meta.timestamp != 0)
+      occupied++;
+  if (occupied < 2)
+    return 0;
+
+  for (int j = 0; j < MAX_LEAK_SLOTS; ++j) {
+    if (j == self_idx || leakHistory[j].leak.meta.timestamp == 0)
+      continue;
+
+    int lb = tri_text_len(leakHistory[j].leak.text);
+    int nb = (lb >= 3) ? (lb - 2) : 0;
+    if (nb > DIV_TRIGRAM_BOUND)
+      nb = DIV_TRIGRAM_BOUND;
+    for (int i = 0; i < nb; ++i)
+      keys_b[i] = trigram_code(leakHistory[j].leak.text, i);
+    if (nb > 0)
+      hsort_u32(keys_b, nb);
+    int ub = 0;
+    for (int i = 0; i < nb; ++i)
+      if (i == 0 || keys_b[i] != keys_b[i - 1])
+        keys_b[ub++] = keys_b[i];
+
+    int inter = 0, x = 0, y = 0;
+    while (x < ua && y < ub) {
+      if (keys_a[x] == keys_b[y]) {
+        ++inter;
+        ++x;
+        ++y;
+      } else if (keys_a[x] < keys_b[y])
+        ++x;
+      else
+        ++y;
+    }
+
+    int un = ua + ub - inter;
+    if (un <= 0)
+      continue;
+    if (best_union == 0 || inter * best_union > best_inter * un) {
+      best_inter = inter;
+      best_union = un;
+      if (best_union > 0 && best_inter == best_union)
+        return 256; // identical sets: cannot do better
+    }
+  }
+
+  if (best_union == 0)
+    return 0;
+  return (256 * best_inter) / best_union;
 }
 
 void processLeakQueue() {
@@ -2525,7 +2629,19 @@ void processLeakQueue() {
           uint32_t oldest_time = UINT32_MAX;
 
           for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
-            int score = score_of(leakHistory[i].leak);
+            // Age penalty from last-seen; wrap-safe unsigned subtraction.
+            // Bounded so age can never by itself outweigh the high-value bonus.
+            uint32_t age_ms = millis() - leakHistory[i].leak.meta.timestamp;
+            int age_penalty =
+                (int)((age_ms / AGE_PENALTY_STEP_MS) * AGE_PENALTY_WEIGHT);
+            if (age_penalty > AGE_PENALTY_MAX)
+              age_penalty = AGE_PENALTY_MAX;
+
+            int score =
+                score_of(leakHistory[i].leak) -
+                REDUNDANCY_WEIGHT *
+                    retained_redundancy_score(leakHistory[i].leak, i) -
+                age_penalty;
 
             if (score < min_score) {
               min_score = score;
@@ -2544,7 +2660,7 @@ void processLeakQueue() {
             incoming_score = strlen(incomingLeak.text);
           if (incomingLeak.meta.is_high_value)
             incoming_score += 300;
-          incoming_score += 2 * incoming_diversity_bonus(incomingLeak);
+          incoming_score += 10 * incoming_diversity_bonus(incomingLeak);
 
           if (incoming_score > min_score) {
             targetIndex = victim_idx;
