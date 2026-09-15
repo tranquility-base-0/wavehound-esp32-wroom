@@ -742,6 +742,12 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         uint8_t *frame_body = payload + header_len;
         uint16_t body_len = len - header_len;
 
+        // Zero-payload ordinary data frames (Null, QoS Null, header-only
+        // data): discard before the cooldown gate so they never touch the
+        // flow cache, funnel counters, queues, or persistent list.
+        if (body_len == 0)
+          return;
+
         // --- STRIP LLC, IP, AND UDP HEADERS ---
         uint16_t captured_src_port = 0;
         uint16_t captured_dst_port = 0;
