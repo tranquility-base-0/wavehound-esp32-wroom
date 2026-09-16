@@ -1201,7 +1201,15 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         header_len += 4; // HT Control present
       // ---------------------------------------
 
-      if (len > header_len + 4) {
+      // Null Data (subtype 4) and QoS Null (subtype 12) frames carry no data
+      // payload, so they cannot constitute meaningful insecure-encryption
+      // findings. Skip the IV evaluation for them (the plaintext zero-payload
+      // filter lives in the opposite !is_protected branch and cannot cover
+      // these).
+      bool is_null_frame =
+          ((payload[0] & 0xF0) >> 4) == 4 || ((payload[0] & 0xF0) >> 4) == 12;
+
+      if (!is_null_frame && len > header_len + 4) {
         uint8_t *iv_ptr = payload + header_len;
 
         bool is_ext_iv = (iv_ptr[3] & 0x20) != 0;
@@ -1498,6 +1506,19 @@ void processLiveDumpQueue() {
     bool custom_extracted = false;
     memset(eapol_text, 0, sizeof(eapol_text));
     bool eapol_detected = false;
+
+    // Early semantic classification: QoS Null (802.11 DATA subtype 12).
+    // These frames carry no data payload; their nonzero frame_length is
+    // frame-level overhead (FCS etc.). Classify them explicitly so they do
+    // not enter the payload/protocol parsers. The only producer for this
+    // queue is the plaintext funnel, which admits DATA-type frames only
+    // (deauths and EAPOL never reach here), so subtype 12 unambiguously
+    // identifies QoS Null.
+    if (live_evt.meta.frame_subtype == 12) {
+      snprintf(temp_text, MAX_LEAK_STR_LEN,
+               "0B QoS Null (no data payload)");
+      custom_extracted = true;
+    }
 
     if (live_evt.meta.protocol == 6 || live_evt.meta.src_port == 80 ||
         live_evt.meta.dst_port == 80) {
@@ -2086,6 +2107,24 @@ void processPcapData() {
 void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
                      const char *dst_vendor, const char *ssid) {
 
+  // Mirror drawDeviceList()'s PCAP presentation (lists.cpp): compact length,
+  // direction/subtype/protocol strings, IPv6 compression, srcIp>dstIp|age.
+  // Field order and separators match the waterfall header lines so the
+  // serial record reads like the on-screen one. Data, ordering, and logging
+  // behavior are unchanged.
+  char lenStr[8];
+  uint16_t fLen = leak.meta.frame_length;
+  if (fLen < 1000)
+    snprintf(lenStr, sizeof(lenStr), "%dB", fLen);
+  else
+    snprintf(lenStr, sizeof(lenStr), "%dK", fLen / 1000);
+
+  char portStr[24] = "";
+  if (leak.meta.protocol == 6 || leak.meta.protocol == 17) {
+    snprintf(portStr, sizeof(portStr), "|%d>%d", leak.meta.src_port,
+             leak.meta.dst_port);
+  }
+
   // Render correctly regardless of IP version, reusing meta.ip_version
   // as the single source of truth (same field the on-screen PCAP display
   // already keys off of).
@@ -2104,20 +2143,48 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
                 sizeof(dstIpStr));
   }
 
+  // Compact last-seen age, same form as the waterfall's lastSeen field
+  // (computed here rather than via the UI helper to avoid a capture->ui
+  // include).
+  uint32_t age_s = (millis() - leak.meta.timestamp) / 1000;
+  char ageStr[8];
+  if (age_s < 60)
+    snprintf(ageStr, sizeof(ageStr), "%ds", (unsigned)age_s);
+  else if (age_s < 3600)
+    snprintf(ageStr, sizeof(ageStr), "%dm", (unsigned)(age_s / 60));
+  else
+    snprintf(ageStr, sizeof(ageStr), "%dh", (unsigned)(age_s / 3600));
+
+  // Sanitize the payload text exactly like the waterfall's payload slice
+  // (non-printables -> '.').
+  char safePayload[MAX_LEAK_STR_LEN + 1] = {0};
+  int pLen = leak.retained_len;
+  if (pLen > MAX_LEAK_STR_LEN - 1)
+    pLen = MAX_LEAK_STR_LEN - 1;
+  memcpy(safePayload, leak.text, pLen);
+  safePayload[pLen] = '\0';
+  for (int pt = 0; pt < pLen; pt++) {
+    if (safePayload[pt] < 32 || safePayload[pt] > 126)
+      safePayload[pt] = '.';
+  }
+
   Serial.printf(
-      "🚨 CLRTXT [%s] | BSSID(SSID): %02X:%02X:%02X:%02X:%02X:%02X (%s) | "
-      "Src MAC: %02X:%02X:%02X:%02X:%02X:%02X (%s) [%s:%u] -> "
-      "Dst MAC: %02X:%02X:%02X:%02X:%02X:%02X (%s) [%s:%u] | "
-      "Ch: %u | Text: %s\n",
-      leak.meta.is_high_value ? "HIGH-VALUE" : "STANDARD", leak.meta.bssid[0],
-      leak.meta.bssid[1], leak.meta.bssid[2], leak.meta.bssid[3],
-      leak.meta.bssid[4], leak.meta.bssid[5], ssid, leak.meta.src_mac[0],
-      leak.meta.src_mac[1], leak.meta.src_mac[2], leak.meta.src_mac[3],
-      leak.meta.src_mac[4], leak.meta.src_mac[5], src_vendor, srcIpStr,
-      leak.meta.src_port, leak.meta.dst_mac[0], leak.meta.dst_mac[1],
+      "🚨 CLRTXT: "
+      "%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%u\n"
+      "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s\n"
+      "%s>%s|age:%s\n"
+      "%s\n",
+      leak.meta.src_mac[0], leak.meta.src_mac[1], leak.meta.src_mac[2],
+      leak.meta.src_mac[3], leak.meta.src_mac[4], leak.meta.src_mac[5],
+      src_vendor, leak.meta.dst_mac[0], leak.meta.dst_mac[1],
       leak.meta.dst_mac[2], leak.meta.dst_mac[3], leak.meta.dst_mac[4],
-      leak.meta.dst_mac[5], dst_vendor, dstIpStr, leak.meta.dst_port,
-      leak.meta.channel, leak.text);
+      leak.meta.dst_mac[5], dst_vendor, lenStr, leak.meta.channel,
+      leak.meta.bssid[0], leak.meta.bssid[1], leak.meta.bssid[2],
+      leak.meta.bssid[3], leak.meta.bssid[4], leak.meta.bssid[5], ssid,
+      getDirectionStr(leak.meta.direction),
+      getSubtypeStr(leak.meta.frame_subtype),
+      getProtocolStr(leak.meta.protocol), portStr, srcIpStr, dstIpStr, ageStr,
+      safePayload);
 }
 
 // ============================================================================
@@ -2525,13 +2592,10 @@ void processLeakQueue() {
 
         // Existing persistent entry.
         // Do NOT run the eviction engine.
-        // [xN] = receptions of THIS entry's canonical payload only.
-        if (incomingLeak.meta.flow_hash == leakHistory[i].flow_hash &&
-            incomingLeak.meta.flow_count > 0) {
-          leakHistory[i].hitCount = incomingLeak.meta.flow_count;
-        }
-        // (a different payload sharing the same src+text, or a
-        //  funnel-bypass leak with flow_count==0, must not alter the count)
+        // [xN] = receptions matching this entry's persistent identity
+        // (source MAC + displayed text), including payload variants whose
+        // raw bytes differ but parse to the same displayed text.
+        leakHistory[i].hitCount++;
 
         // Refresh last-seen timestamp.
         leakHistory[i].leak.meta.timestamp = incomingLeak.meta.timestamp;
