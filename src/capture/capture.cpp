@@ -671,6 +671,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // Create a highly visible alert using the Reason Code
     snprintf(leak.text, MAX_LEAK_STR_LEN - 1, "DEAUTH (Reason: %d)",
              reason_code);
+    leak.retained_len = strnlen(leak.text, MAX_LEAK_STR_LEN - 1);
 
     // Fire directly to the UI, completely bypassing the Data parser
     if (leakQueue != NULL) {
@@ -745,7 +746,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         // Zero-payload ordinary data frames (Null, QoS Null, header-only
         // data): discard before the cooldown gate so they never touch the
         // flow cache, funnel counters, queues, or persistent list.
-        if (body_len == 0)
+        if (body_len <= 4)
           return;
 
         // --- STRIP LLC, IP, AND UDP HEADERS ---
@@ -1288,6 +1289,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
             }
 
             strncpy(leak.text, temp_text, MAX_LEAK_STR_LEN - 1);
+            leak.retained_len = strnlen(leak.text, MAX_LEAK_STR_LEN - 1);
 
             if (leakQueue != NULL) {
               leak_isr_attempts++;
