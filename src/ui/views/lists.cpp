@@ -949,8 +949,11 @@ if (lk.meta.ip_version == 6) {
         }
 
         // --- RENDER DYNAMIC HEIGHT ---
+        // Alert records (recon alerts today) render red instead of cyan so
+        // they are visually distinct from ordinary high-value captures.
         tft.setFreeFont(&UbuntuMono_Regular8pt7b);
-        tft.setTextColor(TFT_CYAN);
+        tft.setTextColor(lk.meta.alert_kind != ALERT_NONE ? TFT_RED
+                                                          : TFT_CYAN);
         tft.drawString(line1, 5, y);
         tft.setTextColor(TFT_YELLOW);
         tft.drawString(line2, 5, y + 14);

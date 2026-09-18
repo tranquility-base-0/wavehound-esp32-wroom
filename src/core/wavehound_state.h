@@ -81,7 +81,19 @@ struct PacketMeta {
     uint8_t  frame_subtype;
     uint8_t  tcp_flags;
     bool     is_high_value;
+    // Dedicated alert-kind tag (0 = not an alert). Lets alert producers
+    // (deauth bypass, recon detectors) identify themselves for UI triggers
+    // without overloading is_high_value (which parser triage also sets).
+    uint8_t  alert_kind;
     uint8_t bssid[6];
+};
+
+// Alert kinds for PacketMeta::alert_kind. Producers are memset-built, so
+// ALERT_NONE (0) is the default on every path.
+enum AlertKind {
+    ALERT_NONE = 0,
+    ALERT_DEAUTH = 1,
+    ALERT_RECON_ARP = 2
 };
 
 struct LiveCaptureEvent {
@@ -350,5 +362,6 @@ extern uint16_t sessionChannelCount;
 
 extern FlowRecord flow_cache[MAX_ACTIVE_FLOWS];
 extern CryptoAlertCache crypto_cache[ALERT_CACHE_SIZE];
+extern uint32_t alert_latch_until_ms; // UI recon-alert footer banner expiry (Core 1 sets, Core 1 draws)
 extern uint8_t crypto_cache_idx;
 

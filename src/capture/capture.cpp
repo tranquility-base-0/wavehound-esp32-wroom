@@ -117,6 +117,132 @@ bool should_alert_crypto(const uint8_t *mac_a, const uint8_t *mac_b,
 
   return true;
 }
+
+// ============================================================================
+// ARP BURST / RECONNAISSANCE DETECTOR (approved design)
+// Detects a short IPv4 ARP request burst from one source MAC:
+// >= ARP_REQ_MIN requests AND >= ARP_TGT_MIN distinct target IPv4s within
+// ARP_WINDOW_MS (reset window). Opcode-1 requests only; gratuitous/
+// announcement ARP (sender_ip == target_ip) is excluded by the caller.
+// One alert per burst; the slot re-arms after ARP_REARM_GAP_MS of scanner
+// inactivity. State: ARP_SCANNERS x 56 B = 224 B static, file-scope — same
+// accounting home as flow_cache/crypto_cache (outside the static_non_union
+// SRAM assert). No heap, no new queue.
+// ============================================================================
+#define ARP_SCANNERS 4       // max simultaneously tracked scanners (LRU)
+#define ARP_TARGETS 8        // remembered target IPv4s per scanner
+#define ARP_WINDOW_MS 5000   // reset-window length
+#define ARP_REQ_MIN 4        // minimum requests in window
+#define ARP_TGT_MIN 4        // minimum distinct targets in window
+#define ARP_REARM_GAP_MS 60000 // scanner silence required to re-arm
+
+struct ArpScannerSlot {
+  // Word-aligned members first to minimize padding: 52 B/slot (208 B total).
+  uint32_t first_seen_ms;            // burst window anchor
+  uint32_t last_seen_ms;             // last eligible request (also LRU)
+  uint16_t req_count;                // saturating at 65535
+  uint8_t mac[6];                    // scanner source MAC (slot key)
+  uint8_t distinct;                  // saturating distinct-target counter
+  uint8_t ntargets;                  // fill pointer into target_seen
+  bool alerted;                      // burst already alerted (re-arm keyed on
+                                     // last_seen_ms silence gap)
+  uint8_t target_seen[ARP_TARGETS][4]; // per-scanner target dedup list
+};
+
+static ArpScannerSlot arp_scanners[ARP_SCANNERS]; // 208 B
+
+// Feed one eligible ARP request. Returns true exactly on the threshold-
+// crossing event of a not-currently-alerted slot, with the forensic text
+// written to out_text. Pure detector state machine — no I/O here; the
+// caller builds and enqueues the ALERT_RECON_ARP record (bypass pattern).
+static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
+                          const uint8_t *target_ip, uint32_t now_ms,
+                          char *out_text, size_t max_len) {
+  ArpScannerSlot *slot = nullptr;
+  ArpScannerSlot *stalest = &arp_scanners[0];
+
+  for (int i = 0; i < ARP_SCANNERS; i++) {
+    ArpScannerSlot &s = arp_scanners[i];
+    if (slot == nullptr && memcmp(s.mac, scanner_mac, 6) == 0)
+      slot = &s;
+    if (s.last_seen_ms < stalest->last_seen_ms)
+      stalest = &s;
+  }
+
+  if (slot == nullptr) {
+    // New scanner: claim the stalest slot (zeroed/empty slots have
+    // last_seen_ms == 0 and are chosen first).
+    slot = stalest;
+    memset(slot, 0, sizeof(ArpScannerSlot));
+    memcpy(slot->mac, scanner_mac, 6);
+  } else if (slot->last_seen_ms != 0 &&
+             now_ms - slot->last_seen_ms >= ARP_REARM_GAP_MS) {
+    // Re-arm: 60 s of scanner inactivity fully resets the slot, including
+    // the alerted latch — the next burst is genuinely new.
+    memset(slot, 0, sizeof(ArpScannerSlot));
+    memcpy(slot->mac, scanner_mac, 6);
+  } else if (slot->first_seen_ms != 0 &&
+             now_ms - slot->first_seen_ms > ARP_WINDOW_MS) {
+    // Reset window expired: counts restart, but the alert latch stays so a
+    // continuously-active scanner cannot re-alert until it goes silent.
+    slot->first_seen_ms = now_ms;
+    slot->req_count = 0;
+    slot->distinct = 0;
+    slot->ntargets = 0;
+  }
+
+  if (slot->first_seen_ms == 0)
+    slot->first_seen_ms = now_ms; // anchor a fresh burst window
+
+  slot->last_seen_ms = now_ms;
+  if (slot->req_count < 0xFFFF)
+    slot->req_count++;
+
+  // Distinct-target dedup. Once the 8-entry list is full the counter stops
+  // (it is already >= the threshold and could no longer be verified exact);
+  // the reported number degrades to "8+" at format time.
+  bool known = false;
+  for (int t = 0; t < slot->ntargets; t++) {
+    if (memcmp(slot->target_seen[t], target_ip, 4) == 0) {
+      known = true;
+      break;
+    }
+  }
+  if (!known && slot->ntargets < ARP_TARGETS) {
+    memcpy(slot->target_seen[slot->ntargets], target_ip, 4);
+    slot->ntargets++;
+    if (slot->distinct < 255)
+      slot->distinct++;
+  }
+
+  if (!slot->alerted && slot->req_count >= ARP_REQ_MIN &&
+      slot->distinct >= ARP_TGT_MIN) {
+    slot->alerted = true;
+
+    // Forensic text: actual elapsed burst duration, exact distinct count
+    // while the list is not full, "8+" once it is; complete IPv4s.
+    // NOTE: with the default thresholds (req>=4, tgt>=4) the alert fires at
+    // the crossing request where distinct == req_count == 4 exactly, so the
+    // reported count is always "4". The "8+" branch is reachable only if
+    // ARP_REQ_MIN is raised above 8 on hardware (e.g. req>=12); it is kept
+    // so the text stays correct under any threshold retuning.
+    char tgt_str[6];
+    if (slot->ntargets >= ARP_TARGETS)
+      strncpy(tgt_str, "8+", sizeof(tgt_str) - 1), tgt_str[2] = '\0';
+    else
+      snprintf(tgt_str, sizeof(tgt_str), "%u", slot->distinct);
+    uint32_t elapsed_s =
+        (now_ms - slot->first_seen_ms + 999) / 1000; // ceil to seconds
+    snprintf(out_text, max_len,
+             "ARP SCAN %u req/%s tgts %lus %u.%u.%u.%u->%u.%u.%u.%u",
+             slot->req_count, tgt_str, (unsigned long)elapsed_s,
+             sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
+             target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
+    return true;
+  }
+  return false;
+}
+
 void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (pause_sniffing)
     return;
@@ -662,6 +788,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     leak.meta.channel = pkt->rx_ctrl.channel;
     leak.meta.frame_subtype = 12;
     leak.meta.is_high_value = true; // Deauths are always a massive red flag!
+    leak.meta.alert_kind = ALERT_DEAUTH;
 
     // Address 1: Destination, Address 2: Source, Address 3: BSSID
     memcpy(leak.meta.dst_mac, payload + 4, 6);
@@ -820,6 +947,80 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
             body_len -= 4;
           }
           // --------------------------------------
+
+          // --- ARP BURST DETECTOR FEED ---
+          // BEFORE the funnel LRU/30 s cooldown (:hash_flow covers payload
+          // bytes, so repeated requests to the same target are suppressed
+          // downstream) — the detector must see the repeats that build a
+          // burst. Normal funnel behavior for the probe itself is unchanged.
+          if (ether_type == 0x0806 && body_len >= 28) {
+            uint16_t arp_htype = (frame_body[0] << 8) | frame_body[1];
+            uint16_t arp_ptype = (frame_body[2] << 8) | frame_body[3];
+            uint8_t opcode = (frame_body[6] << 8) | frame_body[7];
+
+            // Ethernet/IPv4/6/4 shape, requests only, gratuitous/announcement
+            // (sender_ip == target_ip) excluded — same validation as
+            // parse_arp (link_layer.cpp).
+            if (arp_htype == 1 && arp_ptype == 0x0800 && frame_body[4] == 6 &&
+                frame_body[5] == 4 && opcode == 1 &&
+                memcmp(frame_body + 14, frame_body + 24, 4) != 0) {
+              char arp_alert_text[MAX_LEAK_STR_LEN] = {0};
+              uint32_t arp_now_ms =
+                  xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+
+              if (arp_scan_feed(addr2, frame_body + 14, frame_body + 24,
+                                arp_now_ms, arp_alert_text,
+                                sizeof(arp_alert_text))) {
+                // Threshold crossed: emit the ALERT_RECON_ARP record through
+                // leakQueue — the crypto-bypass shape verbatim.
+                PacketCapture leak;
+                memset(&leak, 0, sizeof(PacketCapture));
+
+                leak.meta.timestamp = arp_now_ms;
+                leak.meta.frame_length = pkt->rx_ctrl.sig_len;
+                leak.meta.channel = pkt->rx_ctrl.channel;
+                leak.meta.frame_subtype = captured_subtype;
+                leak.meta.is_high_value = true; // +300 retention (unchanged
+                                                // is_high_value semantics)
+                leak.meta.alert_kind = ALERT_RECON_ARP;
+
+                // DS-aware 802.11 address mapping — same four-way form as the
+                // cleartext funnel and crypto branch.
+                if (to_ds && !from_ds) {
+                  memcpy(leak.meta.src_mac, payload + 10, 6); // addr2 = SA
+                  memcpy(leak.meta.dst_mac, mac3, 6);         // addr3 = DA
+                  memcpy(leak.meta.bssid, payload + 4, 6);    // addr1 = BSSID
+                } else if (from_ds && !to_ds) {
+                  memcpy(leak.meta.src_mac, mac3, 6);        // addr3 = SA
+                  memcpy(leak.meta.dst_mac, payload + 4, 6); // addr1 = DA
+                  memcpy(leak.meta.bssid, payload + 10, 6);  // addr2 = BSSID
+                } else if (to_ds && from_ds) {
+                  memcpy(leak.meta.src_mac, payload + 24, 6); // addr4 = SA (WDS)
+                  memcpy(leak.meta.dst_mac, mac3, 6);         // addr3 = DA
+                  // bssid left zeroed: no three-address BSSID in WDS
+                } else {
+                  memcpy(leak.meta.src_mac, payload + 10, 6); // addr2 = SA
+                  memcpy(leak.meta.dst_mac, payload + 4, 6);  // addr1 = DA
+                  memcpy(leak.meta.bssid, mac3, 6);           // addr3 = BSSID
+                }
+
+                strncpy(leak.text, arp_alert_text, MAX_LEAK_STR_LEN - 1);
+                leak.retained_len = strnlen(leak.text, MAX_LEAK_STR_LEN - 1);
+
+                if (leakQueue != NULL) {
+                  leak_isr_attempts++;
+                  pcap_cooldown_total++; // cumulative: bypass candidate
+                                         // accepted (waterfall z)
+                  if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE)
+                    leak_isr_dropped++;
+                  else
+                    pcap_upstream_total++; // cumulative: bypass leak accounted
+                                           // for display parity
+                }
+              }
+            }
+          }
+
         }
 
         // 2. Check for IPv4 (First nibble is 4)
@@ -2171,11 +2372,14 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
   }
 
   Serial.printf(
-      "🚨 CLRTXT: "
+      "🚨 CLRTXT%s: "
       "%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%u\n"
       "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s\n"
       "%s>%s|age:%s\n"
       "%s\n",
+      leak.meta.alert_kind == ALERT_RECON_ARP
+          ? " [RECON]"
+          : (leak.meta.is_high_value ? " [HIGH-VALUE]" : ""),
       leak.meta.src_mac[0], leak.meta.src_mac[1], leak.meta.src_mac[2],
       leak.meta.src_mac[3], leak.meta.src_mac[4], leak.meta.src_mac[5],
       src_vendor, leak.meta.dst_mac[0], leak.meta.dst_mac[1],
@@ -2649,6 +2853,15 @@ void processLeakQueue() {
       pcap_displayed_total++; // cumulative waterfall numerator (session total)
       logLeakToSerial(incomingLeak, resolved_src_vendor, resolved_dst_vendor,
                       safeSsid);
+
+      // UI plumbing: latch the waterfall-footer recon-alert banner when a
+      // dedicated recon-alert record passes. Gated on alert_kind (not
+      // is_high_value, which parser triage also sets for ordinary
+      // high-value captures) so only real alerts raise the banner.
+      if (incomingLeak.meta.alert_kind == ALERT_RECON_ARP) {
+        extern uint32_t alert_latch_until_ms;
+        alert_latch_until_ms = millis() + 10000; // 10 s banner window
+      }
 
       // ==========================================
       // 4. SMART EVICTION ENGINE
