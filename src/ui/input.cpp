@@ -228,7 +228,18 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
 
           memset(traffic_history, 0, sizeof(traffic_history));
           absolute_max_traffic = 10;
-          resetMonitorState();
+          if (currentRadioMode == RADIO_PCAP) {
+            // PCAP channel re-lock: fresh telemetry session WITHOUT
+            // resetMonitorState()'s union wipes — sessionData aliases
+            // leakHistory there, so the wipe would destroy the persistent
+            // capture/alert list. Same zero set as the MENU-EXIT path.
+            // pause_sniffing stays closed until MENU-EXIT reopens it.
+            pcap_displayed_total = 0;
+            pcap_upstream_total  = 0;
+            pcap_cooldown_total  = 0;
+          } else {
+            resetMonitorState();
+          }
 
           drawMenu();
           delay(150);
