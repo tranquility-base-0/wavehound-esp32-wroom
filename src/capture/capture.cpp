@@ -119,37 +119,71 @@ bool should_alert_crypto(const uint8_t *mac_a, const uint8_t *mac_b,
 }
 
 // ============================================================================
-// ARP BURST / RECONNAISSANCE DETECTOR (approved design)
+// ARP BURST / RECONNAISSANCE DETECTOR (approved design, sliding-window)
 // Detects a short IPv4 ARP request burst from one source MAC:
-// >= ARP_REQ_MIN requests AND >= ARP_TGT_MIN distinct target IPv4s within
-// ARP_WINDOW_MS (reset window). Opcode-1 requests only; gratuitous/
-// announcement ARP (sender_ip == target_ip) is excluded by the caller.
-// One alert per burst; the slot re-arms after ARP_REARM_GAP_MS of scanner
-// inactivity. State: ARP_SCANNERS x 52 B = 208 B static, file-scope — same
-// accounting home as flow_cache/crypto_cache (outside the static_non_union
-// SRAM assert). No heap, no new queue.
+// >= ARP_REQ_MIN requests AND >= ARP_TGT_MIN distinct target IPv4s within a
+// TRAILING ARP_WINDOW_MS window (true sliding window — a request/target
+// counts only while its own timestamp is inside the window). Opcode-1
+// requests only; gratuitous/announcement ARP (sender_ip == target_ip) is
+// excluded by the caller. One alert per armed episode; the slot re-arms
+// after ARP_REARM_GAP_MS of scanner inactivity. State: ARP_SCANNERS x 112 B
+// = 448 B static, file-scope — same accounting home as flow_cache/
+// crypto_cache (outside the static_non_union SRAM assert). No heap, no new
+// queue.
 // ============================================================================
 #define ARP_SCANNERS 4       // max simultaneously tracked scanners (LRU)
-#define ARP_TARGETS 8        // remembered target IPv4s per scanner
-#define ARP_WINDOW_MS 5000   // reset-window length
+#define ARP_TARGETS 8        // tracked distinct target IPv4s per scanner
+#define ARP_WINDOW_MS 5000   // trailing-window length
 #define ARP_REQ_MIN 4        // minimum requests in window
 #define ARP_TGT_MIN 4        // minimum distinct targets in window
 #define ARP_REARM_GAP_MS 60000 // scanner silence required to re-arm
 
-struct ArpScannerSlot {
-  // Word-aligned members first to minimize padding: 52 B/slot (208 B total).
-  uint32_t first_seen_ms;            // burst window anchor
-  uint32_t last_seen_ms;             // last eligible request (also LRU)
-  uint16_t req_count;                // saturating at 65535
-  uint8_t mac[6];                    // scanner source MAC (slot key)
-  uint8_t distinct;                  // saturating distinct-target counter
-  uint8_t ntargets;                  // fill pointer into target_seen
-  bool alerted;                      // burst already alerted (re-arm keyed on
-                                     // last_seen_ms silence gap)
-  uint8_t target_seen[ARP_TARGETS][4]; // per-scanner target dedup list
+// One tracked target: its IPv4 and when it was last queried. Entries whose
+// last_seen_ms falls outside the trailing window expire and are reusable.
+struct ArpTargetEntry {
+  uint32_t last_seen_ms; // last qualifying request to this target
+  uint8_t ip[4];         // target IPv4
 };
 
-static ArpScannerSlot arp_scanners[ARP_SCANNERS]; // 208 B
+struct ArpScannerSlot {
+  // 112 B/slot (448 B total for 4 slots) — the added ring_idx byte is
+  // absorbed by existing tail padding, so it adds 0 bytes to the struct/
+  // array size. Versus the old tumbling-window slot (52 B): +60 B =
+  // per-target timestamps (targets 32->64 B) + the trailing-window
+  // request-timestamp ring (32 B) + the per-slot ring write index (1 B,
+  // within padding).
+  uint32_t last_seen_ms;   // last eligible request (also LRU stamp)
+  uint16_t req_count;      // legacy field, now derived per feed (unused)
+  uint8_t mac[6];          // scanner source MAC (slot key)
+  uint8_t ntargets;        // occupied target entries
+  bool alerted;            // burst already alerted (re-arm keyed on
+                           // last_seen_ms silence gap)
+  uint8_t ring_idx;        // THIS slot's ring write position (per-slot:
+                           // a shared index lets other scanners' feeds
+                           // overwrite this slot's in-window stamps)
+  uint32_t req_ring[ARP_TARGETS]; // timestamps of the last 8 requests
+                                  // (saturating ring; enough to count to
+                                  // ARP_REQ_MIN exactly)
+  ArpTargetEntry targets[ARP_TARGETS]; // tracked targets w/ timestamps
+};
+
+static ArpScannerSlot arp_scanners[ARP_SCANNERS]; // 448 B
+
+// Drop every tracked target whose last observation is older than the
+// trailing window; compact the entry array in place. Returns the new
+// occupied count.
+static uint8_t arp_prune_targets(ArpScannerSlot *slot, uint32_t now_ms) {
+  uint8_t kept = 0;
+  for (uint8_t i = 0; i < slot->ntargets; i++) {
+    if (now_ms - slot->targets[i].last_seen_ms <= ARP_WINDOW_MS) {
+      if (kept != i)
+        slot->targets[kept] = slot->targets[i];
+      kept++;
+    }
+  }
+  slot->ntargets = kept;
+  return kept;
+}
 
 // Feed one eligible ARP request. Returns true exactly on the threshold-
 // crossing event of a not-currently-alerted slot, with the forensic text
@@ -181,61 +215,84 @@ static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
     // the alerted latch — the next burst is genuinely new.
     memset(slot, 0, sizeof(ArpScannerSlot));
     memcpy(slot->mac, scanner_mac, 6);
-  } else if (slot->first_seen_ms != 0 &&
-             now_ms - slot->first_seen_ms > ARP_WINDOW_MS) {
-    // Reset window expired: counts restart, but the alert latch stays so a
-    // continuously-active scanner cannot re-alert until it goes silent.
-    slot->first_seen_ms = now_ms;
-    slot->req_count = 0;
-    slot->distinct = 0;
-    slot->ntargets = 0;
   }
 
-  if (slot->first_seen_ms == 0)
-    slot->first_seen_ms = now_ms; // anchor a fresh burst window
+  // Prune targets that aged out of the trailing window; expired entries
+  // free their slots for new target IPs. (There is no fixed window anchor
+  // anymore — the window trails the current request, so no tumbling-reset
+  // branch exists and partial progress is never discarded.)
+  arp_prune_targets(slot, now_ms);
 
   slot->last_seen_ms = now_ms;
-  if (slot->req_count < 0xFFFF)
-    slot->req_count++;
 
-  // Distinct-target dedup. Once the 8-entry list is full the counter stops
-  // (it is already >= the threshold and could no longer be verified exact);
-  // the reported number degrades to "8+" at format time.
+  // Request count = qualifying requests inside the trailing window.
+  // Maintained as the count of ring timestamps still inside the window;
+  // the ring holds the last ARP_TARGETS request stamps, which is exact
+  // for counting up to ARP_TARGETS (>= ARP_REQ_MIN) and saturates beyond.
+  uint16_t window_reqs = 0;
+  for (int r = 0; r < ARP_TARGETS; r++)
+    if (slot->req_ring[r] != 0 &&
+        now_ms - slot->req_ring[r] <= ARP_WINDOW_MS)
+      window_reqs++;
+
+  // Record this request in the ring (per-slot saturating ring position —
+  // a shared index would let other scanners' feeds overwrite this slot's
+  // in-window stamps, undercounting real bursts).
+  slot->req_ring[slot->ring_idx] = now_ms;
+  slot->ring_idx = (uint8_t)((slot->ring_idx + 1) % ARP_TARGETS);
+  window_reqs++; // the request just recorded is always in-window
+
+  // Distinct-target accounting inside the trailing window.
   bool known = false;
-  for (int t = 0; t < slot->ntargets; t++) {
-    if (memcmp(slot->target_seen[t], target_ip, 4) == 0) {
+  for (uint8_t t = 0; t < slot->ntargets; t++) {
+    if (memcmp(slot->targets[t].ip, target_ip, 4) == 0) {
       known = true;
+      slot->targets[t].last_seen_ms = now_ms; // refresh existing target
       break;
     }
   }
-  if (!known && slot->ntargets < ARP_TARGETS) {
-    memcpy(slot->target_seen[slot->ntargets], target_ip, 4);
-    slot->ntargets++;
-    if (slot->distinct < 255)
-      slot->distinct++;
+  if (!known) {
+    if (slot->ntargets < ARP_TARGETS) {
+      memcpy(slot->targets[slot->ntargets].ip, target_ip, 4);
+      slot->targets[slot->ntargets].last_seen_ms = now_ms;
+      slot->ntargets++;
+    } else {
+      // List full after pruning: evict the oldest entry for the new target
+      // (bounded storage preserved; the oldest is the least likely to be
+      // part of the current window).
+      uint8_t oldest = 0;
+      for (uint8_t t = 1; t < ARP_TARGETS; t++)
+        if (slot->targets[t].last_seen_ms < slot->targets[oldest].last_seen_ms)
+          oldest = t;
+      memcpy(slot->targets[oldest].ip, target_ip, 4);
+      slot->targets[oldest].last_seen_ms = now_ms;
+    }
   }
+  uint8_t distinct = slot->ntargets; // all occupied entries are in-window
 
-  if (!slot->alerted && slot->req_count >= ARP_REQ_MIN &&
-      slot->distinct >= ARP_TGT_MIN) {
+  if (!slot->alerted && window_reqs >= ARP_REQ_MIN &&
+      distinct >= ARP_TGT_MIN) {
     slot->alerted = true;
 
-    // Forensic text: actual elapsed burst duration, exact distinct count
-    // while the list is not full, "8+" once it is; complete IPv4s.
-    // NOTE: with the default thresholds (req>=4, tgt>=4) the alert fires at
-    // the crossing request where distinct == req_count == 4 exactly, so the
-    // reported count is always "4". The "8+" branch is reachable only if
-    // ARP_REQ_MIN is raised above 8 on hardware (e.g. req>=12); it is kept
-    // so the text stays correct under any threshold retuning.
+    // Forensic text: trailing-window counts; exact distinct count while the
+    // list is not full, "8+" once it is; complete IPv4s. Elapsed = the
+    // age of the oldest request still in the window (the true window span).
     char tgt_str[6];
     if (slot->ntargets >= ARP_TARGETS)
       strncpy(tgt_str, "8+", sizeof(tgt_str) - 1), tgt_str[2] = '\0';
     else
-      snprintf(tgt_str, sizeof(tgt_str), "%u", slot->distinct);
+      snprintf(tgt_str, sizeof(tgt_str), "%u", distinct);
+    uint32_t oldest_req = now_ms;
+    for (int r = 0; r < ARP_TARGETS; r++)
+      if (slot->req_ring[r] != 0 &&
+          now_ms - slot->req_ring[r] <= ARP_WINDOW_MS &&
+          slot->req_ring[r] < oldest_req)
+        oldest_req = slot->req_ring[r];
     uint32_t elapsed_s =
-        (now_ms - slot->first_seen_ms + 999) / 1000; // ceil to seconds
+        (now_ms - oldest_req + 999) / 1000; // ceil to seconds
     snprintf(out_text, max_len,
              "ARP SCAN %u req/%s tgts %lus %u.%u.%u.%u->%u.%u.%u.%u",
-             slot->req_count, tgt_str, (unsigned long)elapsed_s,
+             window_reqs, tgt_str, (unsigned long)elapsed_s,
              sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
              target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
     return true;
