@@ -92,8 +92,9 @@ struct PacketMeta {
 // ALERT_NONE (0) is the default on every path.
 enum AlertKind {
     ALERT_NONE = 0,
-    ALERT_DEAUTH = 1,
-    ALERT_RECON_ARP = 2
+    ALERT_DEAUTH = 1,       // (retained: no producer currently sets it)
+    ALERT_RECON_ARP = 2,
+    ALERT_DEAUTH_FLOOD = 3
 };
 
 struct LiveCaptureEvent {
@@ -362,6 +363,7 @@ extern uint16_t sessionChannelCount;
 
 extern FlowRecord flow_cache[MAX_ACTIVE_FLOWS];
 extern CryptoAlertCache crypto_cache[ALERT_CACHE_SIZE];
-extern uint32_t alert_latch_until_ms; // UI recon-alert footer banner expiry (Core 1 sets, Core 1 draws)
+extern uint32_t alert_latch_until_ms; // UI alert footer banner expiry (Core 1 sets, Core 1 draws)
+extern uint8_t alert_latch_kind;      // AlertKind shown while the latch is live
 extern uint8_t crypto_cache_idx;
 

@@ -125,7 +125,7 @@ bool should_alert_crypto(const uint8_t *mac_a, const uint8_t *mac_b,
 // ARP_WINDOW_MS (reset window). Opcode-1 requests only; gratuitous/
 // announcement ARP (sender_ip == target_ip) is excluded by the caller.
 // One alert per burst; the slot re-arms after ARP_REARM_GAP_MS of scanner
-// inactivity. State: ARP_SCANNERS x 56 B = 224 B static, file-scope — same
+// inactivity. State: ARP_SCANNERS x 52 B = 208 B static, file-scope — same
 // accounting home as flow_cache/crypto_cache (outside the static_non_union
 // SRAM assert). No heap, no new queue.
 // ============================================================================
@@ -238,6 +238,71 @@ static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
              slot->req_count, tgt_str, (unsigned long)elapsed_s,
              sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
              target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
+    return true;
+  }
+  return false;
+}
+
+// ============================================================================
+// DEAUTH FLOOD TRIPWIRE (approved design)
+// Detects a burst of >= DEAUTH_FLOOD_MIN deauthentication frames within
+// DEAUTH_FLOOD_WINDOW_MS — deliberately GLOBAL (not keyed on transmitter
+// MAC) so distributed/spoofed floods with many or random source addresses
+// still trip. Broadcast and directed deauths both count. Individual deauth
+// frames remain ordinary captures; this emits ONE extra ALERT_DEAUTH_FLOOD
+// record per flood episode. Latch during continued activity; rearm only
+// after DEAUTH_FLOOD_REARM_MS with zero deauths seen. Channel-hopping note:
+// with 300 ms x 13 hopping the sniffer is on-channel ~25% of the time, so
+// observed rates under-count real floods ~4x — the 8/2s threshold is
+// conservative in the right direction. State: 12 B static, file-scope —
+// same accounting home as arp_scanners. No heap, no new queue.
+// ============================================================================
+#define DEAUTH_FLOOD_MIN 8        // deauths within window to trip
+#define DEAUTH_FLOOD_WINDOW_MS 2000 // burst window
+#define DEAUTH_FLOOD_REARM_MS 60000 // silence required to re-arm
+
+struct DeauthFloodState {
+  // 12 B: 2 x u32 + u16 + bool (naturally packed, no tail padding needed).
+  uint32_t window_start_ms; // anchor of the current burst window
+  uint32_t last_deauth_ms;  // last deauth seen (rearm clock)
+  uint16_t count;           // saturating deauths in current window
+  bool alerted;             // flood episode already alerted
+};
+
+static DeauthFloodState deauth_flood; // 12 B
+
+// Feed one observed deauth frame (any transmitter, broadcast or directed).
+// Returns true exactly on the threshold-crossing event of an un-latched
+// window, with the forensic text written to out_text. Pure state machine —
+// the caller builds and enqueues the ALERT_DEAUTH_FLOOD record.
+static bool deauth_flood_feed(uint32_t now_ms, char *out_text,
+                              size_t max_len) {
+  if (deauth_flood.last_deauth_ms != 0 &&
+      now_ms - deauth_flood.last_deauth_ms >= DEAUTH_FLOOD_REARM_MS) {
+    // Rearm: 60 s of total deauth silence resets the latch — the next
+    // burst is a genuinely new episode.
+    memset(&deauth_flood, 0, sizeof(DeauthFloodState));
+  } else if (deauth_flood.window_start_ms != 0 &&
+             now_ms - deauth_flood.window_start_ms >
+                 DEAUTH_FLOOD_WINDOW_MS) {
+    // Window expired: count restarts, latch persists so continuous
+    // flooding cannot re-alert until silence.
+    deauth_flood.window_start_ms = now_ms;
+    deauth_flood.count = 0;
+  }
+
+  if (deauth_flood.window_start_ms == 0)
+    deauth_flood.window_start_ms = now_ms; // anchor a fresh burst window
+
+  deauth_flood.last_deauth_ms = now_ms;
+  if (deauth_flood.count < 0xFFFF)
+    deauth_flood.count++;
+
+  if (!deauth_flood.alerted && deauth_flood.count >= DEAUTH_FLOOD_MIN) {
+    deauth_flood.alerted = true;
+    snprintf(out_text, max_len, "DEAUTH FLOOD %u frames/%us",
+             deauth_flood.count,
+             (unsigned)((now_ms - deauth_flood.window_start_ms + 999) / 1000));
     return true;
   }
   return false;
@@ -788,7 +853,6 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     leak.meta.channel = pkt->rx_ctrl.channel;
     leak.meta.frame_subtype = 12;
     leak.meta.is_high_value = true; // Deauths are always a massive red flag!
-    leak.meta.alert_kind = ALERT_DEAUTH;
 
     // Address 1: Destination, Address 2: Source, Address 3: BSSID
     memcpy(leak.meta.dst_mac, payload + 4, 6);
@@ -811,11 +875,46 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         pcap_upstream_total++; // cumulative: bypass leak accounted for display
                                // parity
     }
-    // Fire directly to the UI, completely bypassing the Data parser
-    // if (leakQueue != NULL) xQueueSendFromISR(leakQueue, &leak, NULL);
-    // Fire directly to the UI and Logger, completely bypassing the Data parser
-    // if (leakQueue != NULL) xQueueSendFromISR(leakQueue, &leak, NULL);
-    // if (liveDumpQueue != NULL) xQueueSendFromISR(liveDumpQueue, &leak, NULL);
+
+    // --- DEAUTH FLOOD TRIPWIRE ---
+    // Feed this deauth to the global (transmitter-agnostic) burst detector.
+    // Individual frames already shipped above as ordinary captures; on the
+    // threshold crossing this emits ONE additional ALERT_DEAUTH_FLOOD record.
+    {
+      char flood_text[MAX_LEAK_STR_LEN] = {0};
+      if (deauth_flood_feed(now_ms, flood_text, sizeof(flood_text))) {
+        PacketCapture flood;
+        memset(&flood, 0, sizeof(PacketCapture));
+
+        flood.meta.timestamp = now_ms;
+        flood.meta.frame_length = pkt->rx_ctrl.sig_len;
+        flood.meta.channel = pkt->rx_ctrl.channel;
+        flood.meta.frame_subtype = 12;
+        flood.meta.is_high_value = true; // +300 retention (unchanged
+                                         // is_high_value semantics)
+        flood.meta.alert_kind = ALERT_DEAUTH_FLOOD;
+
+        // Same addr1/addr2/addr3 mapping as the per-frame record above
+        // (mgmt frames: DA/SA/BSSID).
+        memcpy(flood.meta.dst_mac, payload + 4, 6);
+        memcpy(flood.meta.src_mac, payload + 10, 6);
+        memcpy(flood.meta.bssid, payload + 16, 6);
+
+        strncpy(flood.text, flood_text, MAX_LEAK_STR_LEN - 1);
+        flood.retained_len = strnlen(flood.text, MAX_LEAK_STR_LEN - 1);
+
+        if (leakQueue != NULL) {
+          leak_isr_attempts++;
+          pcap_cooldown_total++; // cumulative: bypass candidate accepted
+                                 // (waterfall z)
+          if (xQueueSendFromISR(leakQueue, &flood, NULL) != pdTRUE)
+            leak_isr_dropped++;
+          else
+            pcap_upstream_total++; // cumulative: bypass leak accounted for
+                                   // display parity
+        }
+      }
+    }
 
     return;
   }
@@ -2377,9 +2476,11 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
       "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s\n"
       "%s>%s|age:%s\n"
       "%s\n",
-      leak.meta.alert_kind == ALERT_RECON_ARP
-          ? " [RECON]"
-          : (leak.meta.is_high_value ? " [HIGH-VALUE]" : ""),
+      leak.meta.alert_kind == ALERT_DEAUTH_FLOOD
+          ? " [DEAUTH FLOOD]"
+          : (leak.meta.alert_kind == ALERT_RECON_ARP
+                 ? " [RECON]"
+                 : (leak.meta.is_high_value ? " [HIGH-VALUE]" : "")),
       leak.meta.src_mac[0], leak.meta.src_mac[1], leak.meta.src_mac[2],
       leak.meta.src_mac[3], leak.meta.src_mac[4], leak.meta.src_mac[5],
       src_vendor, leak.meta.dst_mac[0], leak.meta.dst_mac[1],
@@ -2854,13 +2955,18 @@ void processLeakQueue() {
       logLeakToSerial(incomingLeak, resolved_src_vendor, resolved_dst_vendor,
                       safeSsid);
 
-      // UI plumbing: latch the waterfall-footer recon-alert banner when a
-      // dedicated recon-alert record passes. Gated on alert_kind (not
-      // is_high_value, which parser triage also sets for ordinary
-      // high-value captures) so only real alerts raise the banner.
-      if (incomingLeak.meta.alert_kind == ALERT_RECON_ARP) {
+      // UI plumbing: latch the waterfall-footer alert banner when a dedicated
+      // alert record passes (recon ARP or deauth flood). Gated on alert_kind
+      // (not is_high_value, which parser triage also sets for ordinary
+      // high-value captures) so only real alerts raise the banner. The latch
+      // kind records WHICH alert to draw so the two banner texts can share
+      // one expiry timestamp.
+      if (incomingLeak.meta.alert_kind == ALERT_RECON_ARP ||
+          incomingLeak.meta.alert_kind == ALERT_DEAUTH_FLOOD) {
         extern uint32_t alert_latch_until_ms;
+        extern uint8_t alert_latch_kind; // AlertKind of the latched banner
         alert_latch_until_ms = millis() + 10000; // 10 s banner window
+        alert_latch_kind = incomingLeak.meta.alert_kind;
       }
 
       // ==========================================

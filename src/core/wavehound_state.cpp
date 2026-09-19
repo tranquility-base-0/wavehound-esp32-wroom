@@ -37,6 +37,7 @@ uint16_t sessionChannelCount = 0;
 FlowRecord flow_cache[MAX_ACTIVE_FLOWS];
 CryptoAlertCache crypto_cache[ALERT_CACHE_SIZE];
 uint32_t alert_latch_until_ms = 0;
+uint8_t alert_latch_kind = ALERT_NONE; // which alert the footer banner shows
 uint8_t crypto_cache_idx = 0;
 
 SortMode currentSortMode = SORT_TOTAL;

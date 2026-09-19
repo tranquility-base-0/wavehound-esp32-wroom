@@ -162,12 +162,15 @@ void drawChartFooter() {
       tft.drawString("|=2m", 10, 301);
 
       // Draw the main status label perfectly centered; swap for a transient
-      // recon-alert banner while the latch (set by processLeakQueue on
-      // recon-alert records) is unexpired.
+      // alert banner while the latch (set by processLeakQueue on
+      // alert records) is unexpired. The latch kind selects the text.
       tft.setTextDatum(MC_DATUM);
       if (millis() < alert_latch_until_ms) {
         tft.setTextColor(TFT_RED);
-        tft.drawString("\xf0\x9f\x9a\xa8 ARP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+        if (alert_latch_kind == ALERT_DEAUTH_FLOOD)
+          tft.drawString("\xf0\x9f\x9a\xa8 DEAUTH FLOOD \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+        else
+          tft.drawString("\xf0\x9f\x9a\xa8 ARP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
       } else {
         tft.drawString("PROMISCUOUS CAPTURE MODE", 240, 309); // 240 is true center of 480px screen
       }
