@@ -169,6 +169,8 @@ void drawChartFooter() {
         tft.setTextColor(TFT_RED);
         if (alert_latch_kind == ALERT_DEAUTH_FLOOD)
           tft.drawString("\xf0\x9f\x9a\xa8 DEAUTH FLOOD \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+        else if (alert_latch_kind == ALERT_RECON_TCP)
+          tft.drawString("\xf0\x9f\x9a\xa8 TCP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
         else
           tft.drawString("\xf0\x9f\x9a\xa8 ARP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
       } else {

@@ -94,7 +94,8 @@ enum AlertKind {
     ALERT_NONE = 0,
     ALERT_DEAUTH = 1,       // (retained: no producer currently sets it)
     ALERT_RECON_ARP = 2,
-    ALERT_DEAUTH_FLOOD = 3
+    ALERT_DEAUTH_FLOOD = 3,
+    ALERT_RECON_TCP = 4
 };
 
 struct LiveCaptureEvent {

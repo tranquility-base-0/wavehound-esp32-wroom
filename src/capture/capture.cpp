@@ -365,6 +365,201 @@ static bool deauth_flood_feed(uint32_t now_ms, char *out_text,
   return false;
 }
 
+// ============================================================================
+// TCP/SYN RECONNAISSANCE DETECTOR (approved design, sliding window)
+// Detects one source IP generating payload-less TCP SYN probes across
+// multiple (dst_ip, dst_port) tuples AND multiple destination ports within
+// a TRAILING TCP_WINDOW_MS window. Behavior detector — deliberately NOT a
+// tool signature. The AND predicate (count AND tuple diversity AND port
+// diversity) means a single-port host sweep does NOT trigger; a same-target
+// SYN flood does NOT trigger (fan-out, not volume). Keyed on the normalized
+// SOURCE IP (routed identity, valid in both directions; a shared bridge MAC
+// in From-DS must not merge distinct external scanners) — src_mac is
+// forensic display data only. Probe predicate mirrors the existing bare-SYN
+// display classifier exactly: protocol 6, body_len == 0 (the ISR-side
+// equivalent of the Core-1 raw_len == 0 test), SYN=1, ACK/RST/FIN=0. State:
+// TCP_SCANNERS x sizeof(TcpScanSlot) static, file-scope — same accounting
+// home as arp_scanners/flow_cache/crypto_cache. No heap, no new queue.
+// ============================================================================
+#define TCP_SCANNERS 4          // max simultaneously tracked source IPs (LRU)
+#define TCP_PROBE_RING 16       // last-N SYN timestamps per slot (exact to 16)
+#define TCP_TUPLES 8            // tracked distinct (dst_ip, dst_port) tuples
+#define TCP_WINDOW_MS 10000     // trailing window (>= 2.5 hop sweeps)
+#define TCP_SYN_MIN 8           // minimum qualifying SYNs in window
+#define TCP_DST_MIN 4           // minimum distinct (dst_ip, dst_port) tuples
+#define TCP_PORT_MIN 3          // minimum distinct destination ports
+#define TCP_REARM_GAP_MS 60000  // source silence required to re-arm
+
+// One tracked (dst_ip, dst_port) tuple: last probe time + identity. Entries
+// whose last_seen_ms falls outside the trailing window expire and are
+// reusable. Distinct-port diversity is DERIVED from this table at feed time
+// (no separate port state; 8 entries bound it well above TCP_PORT_MIN).
+struct TcpScanTuple {
+  uint32_t last_seen_ms; // last qualifying probe to this tuple
+  uint8_t dst_ip[16];    // normalized destination IP (v4 zero-extended)
+  uint16_t dst_port;
+};
+
+struct TcpScanSlot {
+  uint32_t last_seen_ms;  // last eligible probe (also LRU + rearm key)
+  uint8_t key_ip[16];     // normalized source IP — slot key; zeroed = empty
+  bool alerted;           // burst already alerted (rearm keyed on silence)
+  uint8_t ring_idx;       // THIS slot's ring write position (per-slot cursor)
+  uint32_t syn_ring[TCP_PROBE_RING]; // timestamps of the last 16 SYNs
+  uint8_t ntuples;        // occupied tuple entries (all in-window post-prune)
+  TcpScanTuple tuples[TCP_TUPLES];
+};
+
+static TcpScanSlot tcp_scanners[TCP_SCANNERS];
+
+// Drop every tracked tuple whose last observation is older than the trailing
+// window; compact the entry array in place. Returns the new occupied count.
+static uint8_t tcp_prune_tuples(TcpScanSlot *slot, uint32_t now_ms) {
+  uint8_t kept = 0;
+  for (uint8_t i = 0; i < slot->ntuples; i++) {
+    if (now_ms - slot->tuples[i].last_seen_ms <= TCP_WINDOW_MS) {
+      if (kept != i)
+        slot->tuples[kept] = slot->tuples[i];
+      kept++;
+    }
+  }
+  slot->ntuples = kept;
+  return kept;
+}
+
+// Feed one qualifying bare SYN. Returns true exactly on the threshold-
+// crossing event of a not-currently-alerted slot, with the forensic text
+// written to out_text. Pure detector state machine — no I/O here; the
+// caller builds and enqueues the ALERT_RECON_TCP record (bypass pattern).
+static bool tcp_scan_feed(const uint8_t *src_ip, const uint8_t *dst_ip,
+                          uint16_t dst_port, uint32_t now_ms, char *out_text,
+                          size_t max_len) {
+  TcpScanSlot *slot = nullptr;
+  TcpScanSlot *stalest = &tcp_scanners[0];
+
+  for (int i = 0; i < TCP_SCANNERS; i++) {
+    TcpScanSlot &s = tcp_scanners[i];
+    if (slot == nullptr && memcmp(s.key_ip, src_ip, 16) == 0)
+      slot = &s;
+    if (s.last_seen_ms < stalest->last_seen_ms)
+      stalest = &s;
+  }
+
+  if (slot == nullptr) {
+    // New source: claim the stalest slot (zeroed/empty slots have
+    // last_seen_ms == 0 and are chosen first).
+    slot = stalest;
+    memset(slot, 0, sizeof(TcpScanSlot));
+    memcpy(slot->key_ip, src_ip, 16);
+  } else if (slot->last_seen_ms != 0 &&
+             now_ms - slot->last_seen_ms >= TCP_REARM_GAP_MS) {
+    // Re-arm: 60 s of source inactivity fully resets the slot, including
+    // the alerted latch — the next burst is genuinely new.
+    memset(slot, 0, sizeof(TcpScanSlot));
+    memcpy(slot->key_ip, src_ip, 16);
+  }
+
+  // Expire tuple entries that aged out of the trailing window BEFORE
+  // evaluating this probe (expired entries free their slots for new tuples).
+  tcp_prune_tuples(slot, now_ms);
+
+  slot->last_seen_ms = now_ms;
+
+  // SYN count = qualifying SYNs inside the trailing window: ring stamps
+  // still in-window (exact to 16, saturating beyond), plus this request,
+  // which is by definition in-window.
+  uint16_t window_reqs = 0;
+  for (int r = 0; r < TCP_PROBE_RING; r++)
+    if (slot->syn_ring[r] != 0 &&
+        now_ms - slot->syn_ring[r] <= TCP_WINDOW_MS)
+      window_reqs++;
+  slot->syn_ring[slot->ring_idx] = now_ms;
+  slot->ring_idx = (uint8_t)((slot->ring_idx + 1) % TCP_PROBE_RING);
+  window_reqs++; // the SYN just recorded is always in-window
+
+  // Distinct-tuple accounting inside the trailing window. A re-probed
+  // existing tuple refreshes its timestamp and must NOT inflate the count.
+  bool known = false;
+  for (uint8_t t = 0; t < slot->ntuples; t++) {
+    if (memcmp(slot->tuples[t].dst_ip, dst_ip, 16) == 0 &&
+        slot->tuples[t].dst_port == dst_port) {
+      known = true;
+      slot->tuples[t].last_seen_ms = now_ms; // refresh existing tuple
+      break;
+    }
+  }
+  if (!known) {
+    if (slot->ntuples < TCP_TUPLES) {
+      memcpy(slot->tuples[slot->ntuples].dst_ip, dst_ip, 16);
+      slot->tuples[slot->ntuples].dst_port = dst_port;
+      slot->tuples[slot->ntuples].last_seen_ms = now_ms;
+      slot->ntuples++;
+    } else {
+      // Table full after pruning: evict the oldest entry for the new tuple
+      // (bounded storage preserved; the oldest is the least likely to be
+      // part of the current window — ARP target-table pattern).
+      uint8_t oldest = 0;
+      for (uint8_t t = 1; t < TCP_TUPLES; t++)
+        if (slot->tuples[t].last_seen_ms < slot->tuples[oldest].last_seen_ms)
+          oldest = t;
+      memcpy(slot->tuples[oldest].dst_ip, dst_ip, 16);
+      slot->tuples[oldest].dst_port = dst_port;
+      slot->tuples[oldest].last_seen_ms = now_ms;
+    }
+  }
+  uint8_t distinct = slot->ntuples; // all occupied entries are in-window
+
+  // Distinct destination ports among the tracked tuples.
+  uint8_t distinct_ports = 0;
+  uint16_t seen_ports[TCP_TUPLES];
+  for (uint8_t t = 0; t < slot->ntuples; t++) {
+    bool seen = false;
+    for (uint8_t p = 0; p < distinct_ports; p++)
+      if (seen_ports[p] == slot->tuples[t].dst_port)
+        seen = true;
+    if (!seen)
+      seen_ports[distinct_ports++] = slot->tuples[t].dst_port;
+  }
+
+  if (!slot->alerted && window_reqs >= TCP_SYN_MIN &&
+      distinct >= TCP_DST_MIN && distinct_ports >= TCP_PORT_MIN) {
+    slot->alerted = true;
+
+    // Forensic text: trailing-window counts; elapsed = the age of the
+    // oldest ring stamp still inside the window (the true window span —
+    // filter by the window before taking the minimum, the ARP lesson).
+    uint32_t oldest_req = now_ms;
+    for (int r = 0; r < TCP_PROBE_RING; r++)
+      if (slot->syn_ring[r] != 0 &&
+          now_ms - slot->syn_ring[r] <= TCP_WINDOW_MS &&
+          slot->syn_ring[r] < oldest_req)
+        oldest_req = slot->syn_ring[r];
+    uint32_t elapsed_s =
+        (now_ms - oldest_req + 999) / 1000; // ceil to seconds
+    // src_ip is the normalized 16-byte key: bytes 4..15 all zero => IPv4
+    // (render a.b.c.d); otherwise IPv6 (render 8 condensed hex groups).
+    bool is_v4 = true;
+    for (int b = 4; b < 16; b++)
+      if (src_ip[b] != 0) { is_v4 = false; break; }
+    char ip_str[64];
+    if (is_v4) {
+      snprintf(ip_str, sizeof(ip_str), "%u.%u.%u.%u", src_ip[0], src_ip[1],
+               src_ip[2], src_ip[3]);
+    } else {
+      int pos = 0;
+      for (int g = 0; g < 8 && pos < (int)sizeof(ip_str) - 1; g++) {
+        pos += snprintf(ip_str + pos, sizeof(ip_str) - pos, "%s%x",
+                        g ? ":" : "", (src_ip[g * 2] << 8) | src_ip[g * 2 + 1]);
+      }
+    }
+    snprintf(out_text, max_len, "TCP SCAN %u sy/%u dst/%u ports %lus src %s",
+             window_reqs, distinct, distinct_ports,
+             (unsigned long)elapsed_s, ip_str);
+    return true;
+  }
+  return false;
+}
+
 void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (pause_sniffing)
     return;
@@ -1312,6 +1507,88 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
           }
         }
 
+        // --- TCP/SYN RECONNAISSANCE DETECTOR FEED ---
+        // At the IPv4/IPv6 parse convergence, BEFORE the funnel LRU/30 s
+        // cooldown (same rationale as the ARP feed: the detector must see
+        // the repeats that build a burst; hash_flow covers payload bytes
+        // and would suppress same-tuple re-probes downstream). Normal
+        // funnel behavior for the frame itself is unchanged.
+        // Probe predicate mirrors the bare-SYN display classifier exactly:
+        // TCP, payload-less, SYN=1, ACK/RST/FIN=0.
+        if (captured_protocol == 6 && body_len == 0 &&
+            (tcp_flags & 0x02) && !(tcp_flags & 0x10) &&
+            !(tcp_flags & 0x04) && !(tcp_flags & 0x01)) {
+          // Normalized source/destination IP: IPv4 zero-extended into the
+          // 16-byte form (bytes 4..15 zero) so v4 and v6 key uniformly and
+          // cannot collide (a v4 key never equals a v6 key: bytes 4..15
+          // nonzero for any real IPv6 address; only the invalid `::`
+          // unspecified address would collide, and it is not a valid TCP
+          // source).
+          uint8_t tcp_src_key[16] = {0};
+          uint8_t tcp_dst_key[16] = {0};
+          if (captured_ip_version == 6) {
+            memcpy(tcp_src_key, captured_src_ip, 16);
+            memcpy(tcp_dst_key, captured_dst_ip, 16);
+          } else {
+            memcpy(tcp_src_key, captured_src_ip, 4);
+            memcpy(tcp_dst_key, captured_dst_ip, 4);
+          }
+          char tcp_alert_text[MAX_LEAK_STR_LEN] = {0};
+          uint32_t tcp_now_ms =
+              xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
+
+          if (tcp_scan_feed(tcp_src_key, tcp_dst_key, captured_dst_port,
+                            tcp_now_ms, tcp_alert_text,
+                            sizeof(tcp_alert_text))) {
+            // Threshold crossed: emit the ALERT_RECON_TCP record through
+            // leakQueue — the crypto/ARP-bypass shape verbatim.
+            PacketCapture leak;
+            memset(&leak, 0, sizeof(PacketCapture));
+
+            leak.meta.timestamp = tcp_now_ms;
+            leak.meta.frame_length = pkt->rx_ctrl.sig_len;
+            leak.meta.channel = captured_channel;
+            leak.meta.frame_subtype = captured_subtype;
+            leak.meta.is_high_value = true; // +300 retention (unchanged
+                                            // is_high_value semantics)
+            leak.meta.alert_kind = ALERT_RECON_TCP;
+
+            // DS-aware 802.11 address mapping — the same four-way form as
+            // the ARP alert emission and the cleartext funnel.
+            if (to_ds && !from_ds) {
+              memcpy(leak.meta.src_mac, payload + 10, 6); // addr2 = SA
+              memcpy(leak.meta.dst_mac, mac3, 6);         // addr3 = DA
+              memcpy(leak.meta.bssid, payload + 4, 6);    // addr1 = BSSID
+            } else if (from_ds && !to_ds) {
+              memcpy(leak.meta.src_mac, mac3, 6);        // addr3 = SA
+              memcpy(leak.meta.dst_mac, payload + 4, 6); // addr1 = DA
+              memcpy(leak.meta.bssid, payload + 10, 6);  // addr2 = BSSID
+            } else if (to_ds && from_ds) {
+              memcpy(leak.meta.src_mac, payload + 24, 6); // addr4 = SA (WDS)
+              memcpy(leak.meta.dst_mac, mac3, 6);         // addr3 = DA
+              // bssid left zeroed: no three-address BSSID in WDS
+            } else {
+              memcpy(leak.meta.src_mac, payload + 10, 6); // addr2 = SA
+              memcpy(leak.meta.dst_mac, payload + 4, 6);  // addr1 = DA
+              memcpy(leak.meta.bssid, mac3, 6);           // addr3 = BSSID
+            }
+
+            strncpy(leak.text, tcp_alert_text, MAX_LEAK_STR_LEN - 1);
+            leak.retained_len = strnlen(leak.text, MAX_LEAK_STR_LEN - 1);
+
+            if (leakQueue != NULL) {
+              leak_isr_attempts++;
+              pcap_cooldown_total++; // cumulative: bypass candidate
+                                     // accepted (waterfall z)
+              if (xQueueSendFromISR(leakQueue, &leak, NULL) != pdTRUE)
+                leak_isr_dropped++;
+              else
+                pcap_upstream_total++; // cumulative: bypass leak accounted
+                                       // for display parity
+            }
+          }
+        }
+
         // =========================================================
         // TCP/443 PAYLOAD HANDOFF DIAGNOSTIC
         // =========================================================
@@ -1852,8 +2129,11 @@ void processLiveDumpQueue() {
   LiveCaptureEvent &live_evt = *ptr_core1_evt;
   int packets_processed = 0;
   // uint32_t start_time = micros(); // disabled with the benchmark print
-  static char temp_text[MAX_LEAK_STR_LEN];
-  static char eapol_text[MAX_LEAK_STR_LEN];
+  // Scratch buffers are ordinary stack locals (freed on return): they are
+  // zeroed per queue-pull below and never read across calls, so static
+  // storage spent 1 KiB of .dram0.bss for nothing.
+  char temp_text[MAX_LEAK_STR_LEN];
+  char eapol_text[MAX_LEAK_STR_LEN];
 
   // Check count BEFORE pulling from the queue (short-circuit order matters).
   while (packets_processed < 5 &&
@@ -2535,9 +2815,11 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
       "%s\n",
       leak.meta.alert_kind == ALERT_DEAUTH_FLOOD
           ? " [DEAUTH FLOOD]"
-          : (leak.meta.alert_kind == ALERT_RECON_ARP
-                 ? " [RECON]"
-                 : (leak.meta.is_high_value ? " [HIGH-VALUE]" : "")),
+          : (leak.meta.alert_kind == ALERT_RECON_TCP
+                 ? " [RECON-TCP]"
+                 : (leak.meta.alert_kind == ALERT_RECON_ARP
+                        ? " [RECON]"
+                        : (leak.meta.is_high_value ? " [HIGH-VALUE]" : ""))),
       leak.meta.src_mac[0], leak.meta.src_mac[1], leak.meta.src_mac[2],
       leak.meta.src_mac[3], leak.meta.src_mac[4], leak.meta.src_mac[5],
       src_vendor, leak.meta.dst_mac[0], leak.meta.dst_mac[1],
@@ -3019,7 +3301,8 @@ void processLeakQueue() {
       // kind records WHICH alert to draw so the two banner texts can share
       // one expiry timestamp.
       if (incomingLeak.meta.alert_kind == ALERT_RECON_ARP ||
-          incomingLeak.meta.alert_kind == ALERT_DEAUTH_FLOOD) {
+          incomingLeak.meta.alert_kind == ALERT_DEAUTH_FLOOD ||
+          incomingLeak.meta.alert_kind == ALERT_RECON_TCP) {
         extern uint32_t alert_latch_until_ms;
         extern uint8_t alert_latch_kind; // AlertKind of the latched banner
         alert_latch_until_ms = millis() + 10000; // 10 s banner window
