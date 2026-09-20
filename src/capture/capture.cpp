@@ -1319,7 +1319,15 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
               uint32_t arp_now_ms =
                   xTaskGetTickCountFromISR() * portTICK_PERIOD_MS;
 
-              if (arp_scan_feed(addr2, frame_body + 14, frame_body + 24,
+              // DS-aware scanner identity — same source mapping as the alert
+              // meta below: addr2 = SA (IBSS/ToDS), addr3 = SA (FromDS),
+              // addr4 = SA (WDS). Feeding raw addr2 keyed FromDS traffic to
+              // the BSSID, collapsing distinct AP-relayed senders.
+              const uint8_t *arp_scanner_mac =
+                  (to_ds && from_ds) ? (payload + 24)
+                                     : (from_ds ? mac3 : addr2);
+              if (arp_scan_feed(arp_scanner_mac, frame_body + 14,
+                                frame_body + 24,
                                 arp_now_ms, arp_alert_text,
                                 sizeof(arp_alert_text))) {
                 // Threshold crossed: emit the ALERT_RECON_ARP record through
@@ -1392,7 +1400,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
           uint8_t ip_header_len = (frame_body[0] & 0x0F) * 4;
 
           // 3. Check Protocol field (Byte 9) for UDP (17)
-          if (frame_body[9] == 17 && body_len > (ip_header_len + 8)) {
+          if (frame_body[9] == 17 && body_len >= (ip_header_len + 8)) {
             captured_protocol = 17;
             uint8_t *udp_header = frame_body + ip_header_len;
             captured_src_port = (udp_header[0] << 8) | udp_header[1];
@@ -1402,7 +1410,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
             body_len -= (ip_header_len + 8);
           }
           // 4. Check Protocol field for TCP (6)
-          else if (frame_body[9] == 6 && body_len > (ip_header_len + 20)) {
+          else if (frame_body[9] == 6 && body_len >= (ip_header_len + 20)) {
             captured_protocol = 6;
             uint8_t *tcp_header = frame_body + ip_header_len;
             captured_src_port = (tcp_header[0] << 8) | tcp_header[1];
@@ -1467,7 +1475,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
             }
           }
           // ==========================================
-          if (next_header == 17 && body_len > (ip_header_len + 8)) {
+          if (next_header == 17 && body_len >= (ip_header_len + 8)) {
             captured_protocol = 17; // UDP
             uint8_t *udp_header = frame_body + ip_header_len;
             captured_src_port = (udp_header[0] << 8) | udp_header[1];
@@ -1475,7 +1483,7 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
 
             frame_body += (ip_header_len + 8);
             body_len -= (ip_header_len + 8);
-          } else if (next_header == 6 && body_len > (ip_header_len + 20)) {
+          } else if (next_header == 6 && body_len >= (ip_header_len + 20)) {
             captured_protocol = 6; // TCP
             uint8_t *tcp_header = frame_body + ip_header_len;
             captured_src_port = (tcp_header[0] << 8) | tcp_header[1];
