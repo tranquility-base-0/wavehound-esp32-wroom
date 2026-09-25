@@ -157,10 +157,6 @@ void drawChartFooter() {
   } else {
       // PCAP gets a clean, unified label instead of useless sort buttons
       tft.setTextColor(TFT_DARKGREY);
-      // Draw the static time scale on the far left
-      tft.setTextDatum(TL_DATUM);
-      tft.drawString("|=2m", 10, 301);
-
       // Draw the main status label perfectly centered; swap for a transient
       // alert banner while the latch (set by processLeakQueue on
       // alert records) is unexpired. The latch kind selects the text.
@@ -168,13 +164,13 @@ void drawChartFooter() {
       if (millis() < alert_latch_until_ms) {
         tft.setTextColor(TFT_RED);
         if (alert_latch_kind == ALERT_DEAUTH_FLOOD)
-          tft.drawString("\xf0\x9f\x9a\xa8 DEAUTH FLOOD \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+          tft.drawString("DEAUTH FLOOD \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
         else if (alert_latch_kind == ALERT_RECON_TCP)
-          tft.drawString("\xf0\x9f\x9a\xa8 TCP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+          tft.drawString("TCP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
         else
-          tft.drawString("\xf0\x9f\x9a\xa8 ARP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
+          tft.drawString("ARP SCAN \xe2\x80\x94 SEE CAPTURE LIST", 240, 309);
       } else {
-        tft.drawString("PROMISCUOUS CAPTURE MODE", 240, 309); // 240 is true center of 480px screen
+        tft.drawString("NO ALERTS", 240, 309); // 240 is true center of 480px screen
       }
       tft.setTextColor(TFT_WHITE);
   }

@@ -881,6 +881,87 @@ if (lk.meta.ip_version == 6) {
     strncpy(dstIpStr, dstIpRaw, sizeof(dstIpStr) - 1);
 }
 
+        // ALERT_RECON_TCP records have no owning frame: render the compact
+        // recon metadata across the first two bands — line1 holds the
+        // source MAC/vendor with the scan source IP (the requested break
+        // point), line2 the labeled BSSID/SSID and channel. line3 (orange)
+        // carries the human-readable summary; the green payload lines carry
+        // the detail (Types/Ports/Dst IPs) parsed from the shared leak.text
+        // — no duplicate TCP state is created for rendering. Every other
+        // record keeps the generic rendering below unchanged.
+        bool recon_tcp = (lk.meta.alert_kind == ALERT_RECON_TCP);
+        char greenBody[MAX_LEAK_STR_LEN + 1] = {0}; // recon payload source
+        if (recon_tcp) {
+          snprintf(line1, sizeof(line1),
+                   "[x%d]%02X%02X%02X%02X%02X%02X(%s) %s",
+                   leakHistory[real_idx].hitCount,
+                   lk.meta.src_mac[0], lk.meta.src_mac[1], lk.meta.src_mac[2],
+                   lk.meta.src_mac[3], lk.meta.src_mac[4], lk.meta.src_mac[5],
+                   srcVend, srcIpStr);
+          snprintf(line2, sizeof(line2),
+                   "BSSID:%02X%02X%02X%02X%02X%02X(%s)|C%u",
+                   lk.meta.bssid[0], lk.meta.bssid[1], lk.meta.bssid[2],
+                   lk.meta.bssid[3], lk.meta.bssid[4], lk.meta.bssid[5],
+                   safeSsid, lk.meta.channel);
+          // Parse the shared body: "TCP SCAN Types: <t> Ports: <p>
+          // dst: <ips> 10s" (constructed in capture.cpp — note the single
+          // spaces after each colon and before the window token). Segment
+          // bounds are computed from the separators so no leading/trailing
+          // space and no part of the "10s" window token leaks into the
+          // extracted strings; canonical order, '+' overflow markers and
+          // no-space list separators are all already in the text.
+          char types[25] = {0}, ports[104] = {0}, ips[346] = {0};
+          const char *tS = strstr(lk.text, "Types:");
+          const char *pS = strstr(lk.text, "Ports:");
+          const char *dS = strstr(lk.text, "dst:");
+          if (tS && pS && dS && pS > tS && dS > pS) {
+            // types = [tS+7, pS-1)   ("Types: " prefix, " " before Ports:)
+            // ports = [pS+7, dS-1)   ("Ports: " prefix, " " before dst:)
+            // ips   = [dS+5, wS-3)   ("dst: " prefix, " " before "10s")
+            size_t tn = (size_t)(pS - 1 - (tS + 7));
+            if (tn >= sizeof(types)) tn = sizeof(types) - 1;
+            memcpy(types, tS + 7, tn);
+            size_t pn = (size_t)(dS - 1 - (pS + 7));
+            if (pn >= sizeof(ports)) pn = sizeof(ports) - 1;
+            memcpy(ports, pS + 7, pn);
+            const char *wS = strrchr(lk.text, 's'); // 's' of trailing "10s"
+            size_t in = (wS && wS - 3 > dS + 4)
+                            ? (size_t)(wS - 3 - (dS + 5))
+                            : strlen(dS + 5);
+            if (in >= sizeof(ips)) in = sizeof(ips) - 1;
+            memcpy(ips, dS + 5, in);
+          }
+          // Defensive edge-trim: the extracted segments must be exactly the
+          // canonical strings (no spaces).
+          auto trim = [](char *s) {
+            size_t n = strlen(s);
+            while (n > 0 && (s[n - 1] == ' ' || s[n - 1] == '\t'))
+              s[--n] = '\0';
+            char *c = s;
+            while (*c == ' ' || *c == '\t')
+              c++;
+            if (c != s)
+              memmove(s, c, strlen(c) + 1);
+          };
+          trim(types);
+          trim(ports);
+          trim(ips);
+          int nports = 1;
+          for (const char *q = ports; *q; q++)
+            if (*q == ',')
+              nports++;
+          bool portPlus = (ports[0] != 0) &&
+                          (ports[strlen(ports) - 1] == '+');
+          bool ipPlus = (ips[0] != 0) &&
+                        (ips[strlen(ips) - 1] == '+');
+          snprintf(line3, sizeof(line3),
+                   "TCP SCAN: %d%s ports, %u%s dst IPs over 10s",
+                   portPlus ? nports - 1 : nports, portPlus ? "+" : "",
+                   lk.meta.frame_length, ipPlus ? "+" : "");
+          // Green detail line: same canonical segments, colon form.
+          snprintf(greenBody, sizeof(greenBody),
+                   "Types:%s Ports:%s Dst IPs:%s", types, ports, ips);
+        } else {
         snprintf(line1, sizeof(line1), "[x%d]%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d",
                  leakHistory[real_idx].hitCount,
                  lk.meta.src_mac[0], lk.meta.src_mac[1], lk.meta.src_mac[2],
@@ -900,18 +981,32 @@ if (lk.meta.ip_version == 6) {
                  getProtocolStr(lk.meta.protocol), portStr);
 
         snprintf(line3, sizeof(line3), "%s>%s|%s", srcIpStr, dstIpStr, ageCombo);
+        } // closes the non-recon else branch
 
         // --- SAFE PAYLOAD SLICING (Explicit memcpy & Clamp) ---
+        // Recon entries slice the reformatted green detail body instead of
+        // the raw leak.text (same wrap machinery, no leak.text alteration).
         int pLen = lk.retained_len;
         if (pLen > MAX_LEAK_STR_LEN - 1) {
             pLen = MAX_LEAK_STR_LEN - 1; // Defensive boundary clamp
         }
 
         char safePayload[MAX_LEAK_STR_LEN + 1] = {0};
-        size_t copyLen = pLen;
-
-        memcpy(safePayload, lk.text, copyLen);
+        size_t copyLen;
+        if (recon_tcp) {
+            copyLen = strnlen(greenBody, MAX_LEAK_STR_LEN);
+            memcpy(safePayload, greenBody, copyLen);
+        } else {
+            copyLen = pLen;
+            memcpy(safePayload, lk.text, copyLen);
+        }
         safePayload[copyLen] = '\0'; // Guarantee NUL termination
+
+        // Recon entries slice greenBody, not leak.text: align the payload
+        // length with what was actually copied so the NUL tail beyond it is
+        // not sanitized into display dots and not sliced as payload.
+        if (recon_tcp)
+            pLen = (int)copyLen;
 
         // Fast sanitization loop utilizing clamped pLen
         for (int pt = 0; pt < pLen; pt++) {

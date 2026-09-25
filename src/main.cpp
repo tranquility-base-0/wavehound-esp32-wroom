@@ -328,6 +328,10 @@ void loop() {
       prev_cooldown = pcap_cooldown_total;
 
       drawTelemetryHeader(win_x, win_y, win_z);
+
+      // Refresh the footer so the alert banner (alert_latch_until_ms)
+      // appears without a touch and self-restores on expiry.
+      drawChartFooter();
     }
 
     last_debug_print = millis();
