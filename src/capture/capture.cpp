@@ -396,7 +396,7 @@ static bool deauth_flood_feed(uint32_t now_ms, char *out_text,
 // home as arp_scanners/flow_cache/crypto_cache. No heap, no new queue.
 // ============================================================================
 #define TCP_EPISODES 3          // simultaneous source episodes (ring)
-#define TCP_EPISODE_MS 10000    // fixed observation window per episode
+#define TCP_EPISODE_MS 5000     // fixed observation window per episode
 #define TCP_IP_SLOTS 8          // tracked distinct destination IPs per episode
 #define TCP_PORT_SLOTS 16       // tracked distinct destination ports per episode
 #define TCP_IP_MIN 5            // distinct destination IPs that qualify
@@ -2972,7 +2972,7 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
   // ALERT_RECON_TCP records get their own rendering mirroring the persistent
   // PCAP list's four-line recon entry (canonical vocabulary/order):
   //   MAC(vendor) srcIP / BSSID:mac(ssid)|C<ch> /
-  //   TCP SCAN: N ports, M dst IPs over 10s / Types:... Ports:... Dst IPs:...
+  //   TCP SCAN: N ports, M dst IPs over 5s / Types:... Ports:... Dst IPs:...
   // The detail line is parsed from the shared leak.text exactly like the
   // persistent list parses it (lists.cpp) — same segment bounds and trim —
   // so both presentations derive from one construction path. No age or
@@ -2992,7 +2992,7 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
                   leak.meta.bssid[3], leak.meta.bssid[4], leak.meta.bssid[5],
                   ssid, leak.meta.channel);
     // Segment parse identical to lists.cpp's recon branch: bounds from the
-    // separators, no leading/trailing space, "10s" excluded.
+    // separators, no leading/trailing space, trailing window token excluded.
     char types[25] = {0}, ports[104] = {0}, ips[346] = {0};
     const char *tS = strstr(leak.text, "Types:");
     const char *pS = strstr(leak.text, "Ports:");
@@ -3004,10 +3004,13 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
       size_t pn = (size_t)(dS - 1 - (pS + 7));
       if (pn >= sizeof(ports)) pn = sizeof(ports) - 1;
       memcpy(ports, pS + 7, pn);
-      const char *wS = strrchr(leak.text, 's'); // 's' of trailing "10s"
-      size_t in = (wS && wS - 3 > dS + 4)
-                      ? (size_t)(wS - 3 - (dS + 5))
-                      : strlen(dS + 5);
+      // The IP segment ends at the last space in the text — the separator
+      // before the trailing window token ("5s", width derived from
+      // TCP_EPISODE_MS, so never assume a fixed token width). The ips list
+      // itself is canonical (no spaces), so the last space is that separator.
+      const char *sp = strrchr(leak.text, ' ');
+      size_t in = (sp && sp > dS + 4) ? (size_t)(sp - (dS + 5))
+                  : (sp == dS + 4) ? 0 : strlen(dS + 5);
       if (in >= sizeof(ips)) in = sizeof(ips) - 1;
       memcpy(ips, dS + 5, in);
     }
@@ -3030,7 +3033,7 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
         nports++;
     bool portPlus = (ports[0] != 0) && (ports[strlen(ports) - 1] == '+');
     bool ipPlus = (ips[0] != 0) && (ips[strlen(ips) - 1] == '+');
-    Serial.printf("TCP SCAN: %d%s ports, %u%s dst IPs over 10s\n",
+    Serial.printf("TCP SCAN: %d%s ports, %u%s dst IPs over 5s\n",
                   portPlus ? nports - 1 : nports, portPlus ? "+" : "",
                   leak.meta.frame_length, ipPlus ? "+" : "");
     Serial.printf("Types:%s Ports:%s Dst IPs:%s\n", types, ports, ips);

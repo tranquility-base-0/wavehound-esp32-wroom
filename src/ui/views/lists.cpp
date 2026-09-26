@@ -904,10 +904,11 @@ if (lk.meta.ip_version == 6) {
                    lk.meta.bssid[3], lk.meta.bssid[4], lk.meta.bssid[5],
                    safeSsid, lk.meta.channel);
           // Parse the shared body: "TCP SCAN Types: <t> Ports: <p>
-          // dst: <ips> 10s" (constructed in capture.cpp — note the single
-          // spaces after each colon and before the window token). Segment
+          // dst: <ips> 5s" (constructed in capture.cpp — note the single
+          // spaces after each colon and before the window token, whose
+          // width follows TCP_EPISODE_MS and must not be assumed). Segment
           // bounds are computed from the separators so no leading/trailing
-          // space and no part of the "10s" window token leaks into the
+          // space and no part of the window token leaks into the
           // extracted strings; canonical order, '+' overflow markers and
           // no-space list separators are all already in the text.
           char types[25] = {0}, ports[104] = {0}, ips[346] = {0};
@@ -917,17 +918,18 @@ if (lk.meta.ip_version == 6) {
           if (tS && pS && dS && pS > tS && dS > pS) {
             // types = [tS+7, pS-1)   ("Types: " prefix, " " before Ports:)
             // ports = [pS+7, dS-1)   ("Ports: " prefix, " " before dst:)
-            // ips   = [dS+5, wS-3)   ("dst: " prefix, " " before "10s")
+            // ips   = [dS+5, last ' ')  (the last space is the separator
+            //           before the trailing window token; the ips list is
+            //           canonical, so it contains no spaces of its own)
             size_t tn = (size_t)(pS - 1 - (tS + 7));
             if (tn >= sizeof(types)) tn = sizeof(types) - 1;
             memcpy(types, tS + 7, tn);
             size_t pn = (size_t)(dS - 1 - (pS + 7));
             if (pn >= sizeof(ports)) pn = sizeof(ports) - 1;
             memcpy(ports, pS + 7, pn);
-            const char *wS = strrchr(lk.text, 's'); // 's' of trailing "10s"
-            size_t in = (wS && wS - 3 > dS + 4)
-                            ? (size_t)(wS - 3 - (dS + 5))
-                            : strlen(dS + 5);
+            const char *sp = strrchr(lk.text, ' ');
+            size_t in = (sp && sp > dS + 4) ? (size_t)(sp - (dS + 5))
+                        : (sp == dS + 4) ? 0 : strlen(dS + 5);
             if (in >= sizeof(ips)) in = sizeof(ips) - 1;
             memcpy(ips, dS + 5, in);
           }
@@ -955,7 +957,7 @@ if (lk.meta.ip_version == 6) {
           bool ipPlus = (ips[0] != 0) &&
                         (ips[strlen(ips) - 1] == '+');
           snprintf(line3, sizeof(line3),
-                   "TCP SCAN: %d%s ports, %u%s dst IPs over 10s",
+                   "TCP SCAN: %d%s ports, %u%s dst IPs over 5s",
                    portPlus ? nports - 1 : nports, portPlus ? "+" : "",
                    lk.meta.frame_length, ipPlus ? "+" : "");
           // Green detail line: same canonical segments, colon form.
