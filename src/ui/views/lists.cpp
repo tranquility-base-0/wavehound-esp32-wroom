@@ -957,9 +957,10 @@ if (lk.meta.ip_version == 6) {
           bool ipPlus = (ips[0] != 0) &&
                         (ips[strlen(ips) - 1] == '+');
           snprintf(line3, sizeof(line3),
-                   "TCP SCAN: %d%s ports, %u%s dst IPs over 5s",
+                   "TCP SCAN: %d%s ports, %u%s dst IPs over 5s|%s|%s",
                    portPlus ? nports - 1 : nports, portPlus ? "+" : "",
-                   lk.meta.frame_length, ipPlus ? "+" : "");
+                   lk.meta.frame_length, ipPlus ? "+" : "",
+                   firstSeenStr, lastSeenStr);
           // Green detail line: same canonical segments, colon form.
           snprintf(greenBody, sizeof(greenBody),
                    "Types:%s Ports:%s Dst IPs:%s", types, ports, ips);
