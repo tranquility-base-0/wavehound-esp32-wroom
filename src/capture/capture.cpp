@@ -551,7 +551,8 @@ static void tcp_episode_report(TcpEpisode *ep, uint32_t now_ms) {
   if (ep->probe_mask & (1u << TCP_PROBE_XMAS))
     tpos += snprintf(types_str + tpos, sizeof(types_str) - tpos, "%sXMAS",
                      tpos ? "," : "");
-  if (ep->probe_mask & (1u << TCP_PROBE_MAIMON))
+  if ((ep->probe_mask & (1u << TCP_PROBE_MAIMON)) &&
+      ep->nport >= TCP_PORT_MIN)
     tpos += snprintf(types_str + tpos, sizeof(types_str) - tpos, "%sMAIMON",
                      tpos ? "," : "");
   char alert_text[MAX_LEAK_STR_LEN];
