@@ -890,6 +890,7 @@ if (lk.meta.ip_version == 6) {
         // — no duplicate TCP state is created for rendering. Every other
         // record keeps the generic rendering below unchanged.
         bool recon_tcp = (lk.meta.alert_kind == ALERT_RECON_TCP);
+        bool recon_arp = (lk.meta.alert_kind == ALERT_RECON_ARP);
         char greenBody[MAX_LEAK_STR_LEN + 1] = {0}; // recon payload source
         if (recon_tcp) {
           snprintf(line1, sizeof(line1),
@@ -964,6 +965,40 @@ if (lk.meta.ip_version == 6) {
           // Green detail line: same canonical segments, colon form.
           snprintf(greenBody, sizeof(greenBody),
                    "Types:%s Ports:%s Dst IPs:%s", types, ports, ips);
+        } else if (recon_arp) {
+          // ALERT_RECON_ARP: structurally identical to the TCP recon branch
+          // (no duplicate ARP state; line1/line2 from the same meta/SSID/
+          // vendor machinery; green detail from the shared leak.text). The
+          // text is "ARP SCAN: N req, M targets over Xs|Targets:<list>"
+          // (constructed in arp_scan_feed, deterministic sorted order): the
+          // orange summary takes the counts segment plus the same compact
+          // unlabeled first|last combo the TCP branch uses; the green
+          // payload is the terminal "Targets:" segment verbatim. No generic
+          // fields (broadcast DA, length, direction/subtype/protocol,
+          // None>None IPs, age).
+          snprintf(line1, sizeof(line1),
+                   "[x%d]%02X%02X%02X%02X%02X%02X(%s) %s",
+                   leakHistory[real_idx].hitCount,
+                   lk.meta.src_mac[0], lk.meta.src_mac[1], lk.meta.src_mac[2],
+                   lk.meta.src_mac[3], lk.meta.src_mac[4], lk.meta.src_mac[5],
+                   srcVend, srcIpStr);
+          snprintf(line2, sizeof(line2),
+                   "BSSID:%02X%02X%02X%02X%02X%02X(%s)|C%u",
+                   lk.meta.bssid[0], lk.meta.bssid[1], lk.meta.bssid[2],
+                   lk.meta.bssid[3], lk.meta.bssid[4], lk.meta.bssid[5],
+                   safeSsid, lk.meta.channel);
+          const char *sep = strchr(lk.text, '|');
+          const char *tT = strstr(lk.text, "Targets:");
+          if (sep && tT && tT > sep) {
+            snprintf(line3, sizeof(line3), "%.*s|%s|%s",
+                     (int)(sep - lk.text), lk.text, firstSeenStr,
+                     lastSeenStr);
+            snprintf(greenBody, sizeof(greenBody), "%s", tT);
+          } else {
+            // Defensive: malformed text — render it verbatim with ages.
+            snprintf(line3, sizeof(line3), "%s|%s|%s", lk.text, firstSeenStr,
+                     lastSeenStr);
+          }
         } else {
         snprintf(line1, sizeof(line1), "[x%d]%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%d",
                  leakHistory[real_idx].hitCount,
@@ -996,7 +1031,7 @@ if (lk.meta.ip_version == 6) {
 
         char safePayload[MAX_LEAK_STR_LEN + 1] = {0};
         size_t copyLen;
-        if (recon_tcp) {
+        if (recon_tcp || recon_arp) {
             copyLen = strnlen(greenBody, MAX_LEAK_STR_LEN);
             memcpy(safePayload, greenBody, copyLen);
         } else {
@@ -1008,7 +1043,7 @@ if (lk.meta.ip_version == 6) {
         // Recon entries slice greenBody, not leak.text: align the payload
         // length with what was actually copied so the NUL tail beyond it is
         // not sanitized into display dots and not sliced as payload.
-        if (recon_tcp)
+        if (recon_tcp || recon_arp)
             pLen = (int)copyLen;
 
         // Fast sanitization loop utilizing clamped pLen

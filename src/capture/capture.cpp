@@ -159,7 +159,12 @@ struct ArpScannerSlot {
   // request-timestamp ring (36 B, ARP_REQ_RING = 9 stamps) + the per-slot
   // ring write index (1 B, within padding).
   uint32_t last_seen_ms;   // last eligible request (also LRU stamp)
-  uint16_t req_count;      // legacy field, now derived per feed (unused)
+  uint16_t req_count;      // repurposed: episode overflow latch — set to 1
+                           // when the target-table eviction path runs (a
+                           // 9th+ distinct target displaced a retained one).
+                           // Legacy field, previously unused; rearm/new-
+                           // scanner memset clears it, so it is episode-
+                           // scoped with zero added SRAM
   uint8_t mac[6];          // scanner source MAC (slot key)
   uint8_t ntargets;        // occupied target entries
   bool alerted;            // burst already alerted (re-arm keyed on
@@ -268,13 +273,18 @@ static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
     } else {
       // List full after pruning: evict the oldest entry for the new target
       // (bounded storage preserved; the oldest is the least likely to be
-      // part of the current window).
+      // part of the current window). This is the ONLY path that proves a
+      // 9th+ distinct target was truly observed — latch it in the episode-
+      // scoped req_count flag so the alert's Targets: '+' means "table was
+      // full and another distinct target arrived", not merely "table full
+      // with exactly 8".
       uint8_t oldest = 0;
       for (uint8_t t = 1; t < ARP_TARGETS; t++)
         if (slot->targets[t].last_seen_ms < slot->targets[oldest].last_seen_ms)
           oldest = t;
       memcpy(slot->targets[oldest].ip, target_ip, 4);
       slot->targets[oldest].last_seen_ms = now_ms;
+      slot->req_count = 1;
     }
   }
   uint8_t distinct = slot->ntargets; // all occupied entries are in-window
@@ -284,8 +294,15 @@ static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
     slot->alerted = true;
 
     // Forensic text: trailing-window counts; exact distinct count while the
-    // list is not full, "8+" once it is; complete IPv4s. Elapsed = the
-    // age of the oldest request still in the window (the true window span).
+    // list is not full, "8+" once it is; elapsed = the age of the oldest
+    // request still in the window (the true window span). The target list
+    // is rendered from the RETAINED bounded table (8 entries; the oldest is
+    // evicted for the 9th+ distinct target, so the "8+" count is the honest
+    // "table full, more existed" signal while the list holds the current
+    // members). Targets are sorted in a TRANSIENT STACK copy (numeric IPv4
+    // order) so identical target sets serialize byte-identically regardless
+    // of arrival/eviction order — the persistent list's exact-text dedup
+    // keys on src_mac + text, so ordering must be deterministic.
     char tgt_str[6];
     if (slot->ntargets >= ARP_TARGETS)
       strncpy(tgt_str, "8+", sizeof(tgt_str) - 1), tgt_str[2] = '\0';
@@ -299,11 +316,49 @@ static bool arp_scan_feed(const uint8_t *scanner_mac, const uint8_t *sender_ip,
         oldest_req = slot->req_ring[r];
     uint32_t elapsed_s =
         (now_ms - oldest_req + 999) / 1000; // ceil to seconds
+    // Sorted target-list copy: 8 x u32 = 32 B stack, freed on return.
+    uint32_t sorted_tgts[ARP_TARGETS];
+    for (uint8_t t = 0; t < slot->ntargets; t++)
+      sorted_tgts[t] = ((uint32_t)slot->targets[t].ip[0] << 24) |
+                       ((uint32_t)slot->targets[t].ip[1] << 16) |
+                       ((uint32_t)slot->targets[t].ip[2] << 8) |
+                       (uint32_t)slot->targets[t].ip[3];
+    for (uint8_t a = 1; a < slot->ntargets; a++) {
+      uint32_t key = sorted_tgts[a];
+      uint8_t b = a;
+      while (b > 0 && sorted_tgts[b - 1] > key) {
+        sorted_tgts[b] = sorted_tgts[b - 1];
+        b--;
+      }
+      sorted_tgts[b] = key;
+    }
+    char tgt_list[ARP_TARGETS * 16 + 2]; // 8 x "255.255.255.255" + commas
+                                         // + '+' + NUL (worst 129 B)
+    int lpos = 0;
+    for (uint8_t t = 0; t < slot->ntargets; t++) {
+      uint32_t ip = sorted_tgts[t];
+      lpos += snprintf(tgt_list + lpos, sizeof(tgt_list) - lpos, "%s%u.%u.%u.%u",
+                       t ? "," : "", (ip >> 24) & 0xFF, (ip >> 16) & 0xFF,
+                       (ip >> 8) & 0xFF, ip & 0xFF);
+    }
+    // Saturation rendering, mirroring the TCP recon lists: the request
+    // count shows "10+" when the ring is saturated (ARP_REQ_RING prior
+    // stamps + the current request = the maximum observable count, so
+    // "10 or more" is the honest reading). The target list gets a trailing
+    // '+' only when the eviction path ran this episode (req_count latch:
+    // a 9th+ distinct target genuinely arrived and displaced a retained
+    // one) — a table that filled with exactly 8 distinct targets shows
+    // "8+" in the count but no '+' on the list.
+    char req_str[6];
+    if (window_reqs >= ARP_REQ_RING + 1)
+      strncpy(req_str, "10+", sizeof(req_str) - 1), req_str[3] = '\0';
+    else
+      snprintf(req_str, sizeof(req_str), "%u", window_reqs);
+    if (slot->req_count != 0)
+      lpos += snprintf(tgt_list + lpos, sizeof(tgt_list) - lpos, "+");
     snprintf(out_text, max_len,
-             "ARP SCAN %u req/%s tgts %lus %u.%u.%u.%u->%u.%u.%u.%u",
-             window_reqs, tgt_str, (unsigned long)elapsed_s,
-             sender_ip[0], sender_ip[1], sender_ip[2], sender_ip[3],
-             target_ip[0], target_ip[1], target_ip[2], target_ip[3]);
+             "ARP SCAN: %s req, %s targets over %lus|Targets:%s",
+             req_str, tgt_str, (unsigned long)elapsed_s, tgt_list);
     return true;
   }
   return false;
@@ -595,10 +650,11 @@ static void tcp_episode_report(TcpEpisode *ep, uint32_t now_ms) {
   }
 }
 
-// Core-0 in-feed expiry sweep: any captured data frame reaches here, so
-// qualified episodes report at (or within one frame of) their 10 s mark and
-// every expired episode frees its slot. No timer, no 1 Hz hook, and all
-// detector state stays Core-0-local.
+// Core-0 in-feed expiry sweep: EVERY captured frame in PCAP reaches here
+// (the call sits at the RADIO_PCAP entry point, before is_protected and all
+// downstream gates), so qualified episodes report at (or within one frame
+// of) their TCP_EPISODE_MS mark and every expired episode frees its slot.
+// No timer, no 1 Hz hook, and all detector state stays Core-0-local.
 static void tcp_sweep_episodes(uint32_t now_ms) {
   for (int i = 0; i < TCP_EPISODES; i++) {
     TcpEpisode &ep = tcp_episodes[i];
@@ -1323,6 +1379,13 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
     // 1. TALLY ABSOLUTE RF VOLUME (Before the gate!)
     capture_bytes_tick += pkt->rx_ctrl.sig_len;
 
+    // Core-0 episode expiry sweep — moved to the RADIO_PCAP entry point.
+    // Runs on EVERY captured frame in PCAP mode (including beacons and
+    // encrypted frames) so an expired episode reports and frees reliably,
+    // driven by omnipresent background traffic rather than being stranded
+    // on a quiet channel. Must run before the packet enters the feed.
+    tcp_sweep_episodes(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS);
+
     bool is_protected = (payload[1] & 0x40) != 0;
 
     if (!is_protected) {
@@ -1481,6 +1544,12 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
                 memset(&leak, 0, sizeof(PacketCapture));
 
                 leak.meta.timestamp = arp_now_ms;
+                // Scanner IPv4 in existing meta fields (ARP header SPA at
+                // frame_body+14 — the same offset the feed call above
+                // passes as sender_ip) so the recon renderers can build
+                // line1 from meta, exactly like ALERT_RECON_TCP.
+                leak.meta.ip_version = 4;
+                memcpy(leak.meta.src_ip, frame_body + 14, 4);
                 leak.meta.frame_length = pkt->rx_ctrl.sig_len;
                 leak.meta.channel = pkt->rx_ctrl.channel;
                 leak.meta.frame_subtype = captured_subtype;
@@ -1666,10 +1735,6 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         // the repeats that build a burst; hash_flow covers payload bytes
         // and would suppress same-tuple re-probes downstream). Normal
         // funnel behavior for the frame itself is unchanged.
-        // Core-0 episode expiry sweep — runs on every qualifying data
-        // frame BEFORE match/insert, so an expired episode reports and
-        // frees and the same packet starts a fresh episode.
-        tcp_sweep_episodes(xTaskGetTickCountFromISR() * portTICK_PERIOD_MS);
 
         // Probe predicate: TCP, payload-less, and an exact scan-probe flag
         // shape. SYN (0x02) covers -sS and -sT (wire-identical SYNs); FIN
@@ -2839,9 +2904,34 @@ void processLiveDumpQueue() {
       // pcap.text[MAX_LEAK_STR_LEN - 1] = '\0';
 
       // =========================================================
+      // ARP-REQUEST SUPPRESSION UNDER AN ACTIVE RECON ALERT
+      // Once a persistent ALERT_RECON_ARP row exists for this scanner,
+      // individual "ARP Req: " captures from the SAME scanner are not
+      // sent to the leakQueue UI/persistence pipeline (dropped here —
+      // order-independent, unlike the alert-side cleanup pre-pass in
+      // processLeakQueue(), which stays as the backstop for requests
+      // admitted before the alert row existed). Replies ("ARP Reply:"),
+      // other scanners' requests, and all non-ARP traffic are
+      // unaffected. Same-task access to leakHistory (both queues are
+      // drained from loopTask), so no locking is needed.
+      // =========================================================
+      bool arp_req_suppressed = false;
+      if (strncmp(temp_text, "ARP Req: ", 9) == 0) {
+        for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
+          const LeakHistoryEntry &h = leakHistory[i];
+          if (h.leak.meta.timestamp > 0 &&
+              h.leak.meta.alert_kind == ALERT_RECON_ARP &&
+              memcmp(h.leak.meta.src_mac, pcap.meta.src_mac, 6) == 0) {
+            arp_req_suppressed = true;
+            break;
+          }
+        }
+      }
+
+      // =========================================================
       // Send compact object to the UI/history pipeline
       // =========================================================
-      if (leakQueue != NULL) {
+      if (!arp_req_suppressed && leakQueue != NULL) {
         leak_core1_attempts++;
 
         if (xQueueSend(leakQueue, &pcap, 0) != pdTRUE) {
@@ -2945,18 +3035,6 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
                 sizeof(dstIpStr));
   }
 
-  // Compact last-seen age, same form as the waterfall's lastSeen field
-  // (computed here rather than via the UI helper to avoid a capture->ui
-  // include).
-  uint32_t age_s = (millis() - leak.meta.timestamp) / 1000;
-  char ageStr[8];
-  if (age_s < 60)
-    snprintf(ageStr, sizeof(ageStr), "%ds", (unsigned)age_s);
-  else if (age_s < 3600)
-    snprintf(ageStr, sizeof(ageStr), "%dm", (unsigned)(age_s / 60));
-  else
-    snprintf(ageStr, sizeof(ageStr), "%dh", (unsigned)(age_s / 3600));
-
   // Sanitize the payload text exactly like the waterfall's payload slice
   // (non-printables -> '.').
   char safePayload[MAX_LEAK_STR_LEN + 1] = {0};
@@ -3041,11 +3119,45 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
     return;
   }
 
+  // ALERT_RECON_ARP records get their own rendering mirroring the persistent
+  // PCAP list's recon entry (same vocabulary/order):
+  //   MAC(vendor) scannerIP / BSSID:mac(ssid)|C<ch> /
+  //   "ARP SCAN: N req, M targets over Xs" / Targets:<comma list>
+  // The counts segment is everything before the '|' separator; the target
+  // list is the "Targets:" segment to end of text (terminal segment — the
+  // list is canonical, so it contains no spaces of its own). Both segments
+  // are printed verbatim from the shared leak.text (one construction path
+  // in arp_scan_feed). No generic fields: no broadcast DA, no frame length,
+  // no direction/subtype/protocol, no None>None IPs, no age.
+  if (leak.meta.alert_kind == ALERT_RECON_ARP) {
+    Serial.printf(
+        "🚨 CLRTXT [RECON-ARP]: "
+        "%02X%02X%02X%02X%02X%02X(%s) %s\n",
+        leak.meta.src_mac[0], leak.meta.src_mac[1], leak.meta.src_mac[2],
+        leak.meta.src_mac[3], leak.meta.src_mac[4], leak.meta.src_mac[5],
+        src_vendor, srcIpStr);
+    // Same SSID-resolution path as the persistent list: the `ssid` param
+    // was resolved by the caller from bssidCache before this call.
+    Serial.printf("BSSID:%02X%02X%02X%02X%02X%02X(%s)|C%u\n",
+                  leak.meta.bssid[0], leak.meta.bssid[1], leak.meta.bssid[2],
+                  leak.meta.bssid[3], leak.meta.bssid[4], leak.meta.bssid[5],
+                  ssid, leak.meta.channel);
+    const char *sep = strchr(leak.text, '|');
+    const char *tT = strstr(leak.text, "Targets:");
+    if (sep && tT && tT > sep) {
+      Serial.printf("%.*s\n", (int)(sep - leak.text), leak.text);
+      Serial.printf("%s\n", tT);
+    } else {
+      Serial.printf("%s\n", leak.text); // Defensive: malformed text
+    }
+    return;
+  }
+
   Serial.printf(
       "🚨 CLRTXT%s: "
       "%02X%02X%02X%02X%02X%02X(%s)>%02X%02X%02X%02X%02X%02X(%s)|%s|C%u\n"
       "%02X%02X%02X%02X%02X%02X(%s)|%s|%s|%s%s\n"
-      "%s>%s|age:%s\n"
+      "%s>%s\n"
       "%s\n",
       leak.meta.alert_kind == ALERT_DEAUTH_FLOOD
           ? " [DEAUTH FLOOD]"
@@ -3063,7 +3175,7 @@ void logLeakToSerial(const PacketCapture &leak, const char *src_vendor,
       leak.meta.bssid[3], leak.meta.bssid[4], leak.meta.bssid[5], ssid,
       getDirectionStr(leak.meta.direction),
       getSubtypeStr(leak.meta.frame_subtype),
-      getProtocolStr(leak.meta.protocol), portStr, srcIpStr, dstIpStr, ageStr,
+      getProtocolStr(leak.meta.protocol), portStr, srcIpStr, dstIpStr,
       safePayload);
 }
 
@@ -3292,6 +3404,19 @@ static int retained_redundancy_score(const PacketCapture &leak, int self_idx) {
   g_div_stack_free_now =
       (uint32_t)&probe_anchor - (uint32_t)pxTaskGetStackStart(NULL);
 
+  // Recon alert rows are exempt from the redundancy penalty: recon texts
+  // are near-twins of sibling recon rows BY CONSTRUCTION (fixed vocabulary,
+  // per-episode counts/port lists), so the max-similarity term structurally
+  // dooms every recon row to victim_idx whenever two coexist — a newly
+  // admitted recon alert is then evicted by the next admission. Ordinary
+  // captures keep the existing scoring unchanged (their similarity to recon
+  // text is ~0, and nothing else about their victim score moves). Placed
+  // after the stack probes so the DIAG watermark still samples this
+  // equally-deep frame for recon scorings.
+  if (leak.meta.alert_kind == ALERT_RECON_TCP ||
+      leak.meta.alert_kind == ALERT_RECON_ARP)
+    return 0;
+
   // Build the reference set once (the entry being scored).
   int la = tri_text_len(leak.text);
   int na = (la >= 3) ? (la - 2) : 0;
@@ -3396,6 +3521,39 @@ void processLeakQueue() {
     }
 
     // ==========================================
+    // 0.5 ARP-REQUEST CLEANUP ON RECON ALERT
+    //
+    //   An ALERT_RECON_ARP alert supersedes the noisy individual ARP
+    //   request captures its own burst generated. When one arrives, every
+    //   retained individual ARP-REQUEST capture from the SAME scanner
+    //   (meta.src_mac) is freed so the alert row carries the episode
+    //   instead. Predicate (all three required):
+    //     1. text is an individual ARP request — the exact prefix the
+    //        parser emits (parse_arp, link_layer.cpp: "ARP Req: Who has
+    //        <tgt>? Tell <sender>"); replies ("ARP Reply:"), ICMPv6 ND
+    //        ("ICMPv6 ND: Who has ..."), and recon alerts ("ARP SCAN:")
+    //        all fail the prefix;
+    //     2. alert_kind != ALERT_RECON_ARP — recon alert rows are never
+    //        touched;
+    //     3. same src_mac as the incoming alert — other scanners'
+    //        requests are untouched.
+    //   Existing ALERT_RECON_ARP rows keep participating in the normal
+    //   diversity/eviction machinery, and an incoming alert that exactly
+    //   duplicates a retained ARP alert still matches it below (the alert
+    //   row itself is never cleared here).
+    // ==========================================
+    if (incomingLeak.meta.alert_kind == ALERT_RECON_ARP) {
+      for (int i = 0; i < MAX_LEAK_SLOTS; i++) {
+        LeakHistoryEntry &h = leakHistory[i];
+        if (h.leak.meta.timestamp > 0 &&
+            h.leak.meta.alert_kind != ALERT_RECON_ARP &&
+            memcmp(h.leak.meta.src_mac, incomingLeak.meta.src_mac, 6) == 0 &&
+            strncmp(h.leak.text, "ARP Req: ", 9) == 0)
+          memset(&h.leak, 0, sizeof(h.leak)); // free the slot
+      }
+    }
+
+    // ==========================================
     // 1. TERMINAL HISTORY DEDUPLICATION
     //
     //    This is intentionally independent from
@@ -3483,14 +3641,17 @@ void processLeakQueue() {
         isDuplicate = true;
         ui_needs_update = true;
 
-        // ALERT_RECON_TCP exception: a repeated identical TCP recon alert is
-        // still a real-time event (the same source re-ran the same scan), so
-        // it must notify serial + footer even though the persistent row is
-        // deduplicated (hitCount++ above already recorded the recurrence).
-        // Ordinary duplicate captures keep the existing suppression. The
-        // vendor/SSID resolution below mirrors the !isDuplicate block —
-        // logLeakToSerial and the footer latch need the same inputs.
-        if (incomingLeak.meta.alert_kind == ALERT_RECON_TCP) {
+        // ALERT_RECON_TCP / ALERT_RECON_ARP exception: a repeated identical
+        // recon alert is still a real-time event (the same source re-ran
+        // the same scan), so it must notify serial + footer even though
+        // the persistent row is deduplicated (hitCount++ above already
+        // recorded the recurrence). Ordinary duplicate captures keep the
+        // existing suppression. The vendor/SSID resolution below mirrors
+        // the !isDuplicate block — logLeakToSerial and the footer latch
+        // need the same inputs (the ARP renderer uses only the source
+        // vendor/SSID, but resolving both keeps one shared path).
+        if (incomingLeak.meta.alert_kind == ALERT_RECON_TCP ||
+            incomingLeak.meta.alert_kind == ALERT_RECON_ARP) {
           MacRecord dupRec;
           char dup_src_vendor[16] = "Unknown";
           char dup_dst_vendor[16] = "Unknown";
@@ -3685,7 +3846,15 @@ void processLeakQueue() {
             incoming_score += 300;
           incoming_score += 10 * incoming_diversity_bonus(incomingLeak);
 
-          if (incoming_score > min_score) {
+          // Recon-vocabulary exception: the TCP bypass also covers this
+          // final gate. Recon alert texts are trigram-near-twins of the
+          // retained recon alert (shared fixed vocabulary, overlapping
+          // lists), so their diversity bonus is structurally ~0 — a
+          // genuinely distinct recon alert otherwise fails this strict
+          // gate against healthy high-value victims and is silently
+          // dropped after already being notified on Serial/footer. The
+          // victim (global weakest slot) selection above is unchanged.
+          if (recon_tcp_bypass || incoming_score > min_score) {
             targetIndex = victim_idx;
           }
         }
