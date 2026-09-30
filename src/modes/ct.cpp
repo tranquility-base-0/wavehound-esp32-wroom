@@ -41,8 +41,12 @@ static bool ct_have_prev = false, ct_have_prev_d = false;
 //                            Core-0 feeder; DIAGNOSTIC descriptor only (it
 //                            cannot distinguish "empty RF" from "nothing
 //                            qualifying on air"). NOT a validity test.
-static uint16_t ct_sum_b = 0, ct_sum_s = 0, ct_n_obs = 0;
-static uint32_t ct_sum_b2 = 0, ct_sum_s2 = 0;
+// Horizon-bounded baselines (alpha = 1/32, one shared clock): population
+// mean (Q8.8) and variance (Q8.16) as EWMAs, seeded with the EXACT first
+// valid sample. Variance is excursion-gated (Huber-style; see the evidence
+// section) so sigma describes regime noise, never the transitions.
+static uint16_t ct_ewma_mu_b_q8 = 0, ct_ewma_mu_s_q8 = 0;
+static uint32_t ct_ewma_var_b_q16 = 0, ct_ewma_var_s_q16 = 0;
 static uint8_t ct_min_b = 0, ct_max_b = 0, ct_min_s = 0, ct_max_s = 0;
 static uint16_t ct_obs_count = 0;
 static bool ct_have_obs = false;
@@ -69,7 +73,9 @@ static uint8_t ct_last_ch = 0xFF; // 0xFF = no channel recorded yet
 // Churn channel: running means of ABSOLUTE deltas (m_B = mean|ΔB|). Evidence
 // is EXCESS churn over the segment's own normal churn magnitude, so a
 // sustained walking regime self-quietens once m adapts.
-static uint32_t ct_sum_ab_b = 0, ct_sum_ab_s = 0;
+// Horizon baseline for churn: EWMA of |dB|, |dS| (Q8.8), seeded with the
+// first delta (window 2), evidence from window 3 — same clock as mu/var.
+static uint16_t ct_ewma_m_ab_b_q8 = 0, ct_ewma_m_ab_s_q8 = 0;
 //
 // Retention channel: R = shared/prev_count in Q8.8, from the touch masks
 // (ct_prev_smask = previous valid window's SSID mask — the bit->SSID mapping
@@ -93,7 +99,8 @@ static uint16_t ct_n_ret = 0;                // non-ABSTAIN retention observatio
 // there is no artificial post-commit spike. The rejected term is
 // FLUX-WEIGHTED (frames x unseen identities; rejected identities are not
 // recorded, so each later frame re-attempts — rej <= 2*obs).
-static uint32_t ct_sum_turn = 0; // running Σ turnover (counts per window)
+static uint32_t ct_ewma_m_turn_q8 = 0; // EWMA of turnover (Q8.8, u32: turnover
+                                       // can exceed 255 counts via rej)
 //
 // Common EWMA (Q8.8) + persistence per channel. A channel "is triggering"
 // when persistence >= CT_N_MIN — the persistence state IS the trigger state
@@ -110,10 +117,11 @@ static bool ct_prov_is_t = false;
 
 // Fixed-point constants (Q8.8 unless noted). Initial tunables from the
 // audited design — measurable from [CT-STEP*] traces, not sacred.
-static const uint16_t CT_CV_MAX_Q8 = 384;         // CV_MAX = 1.5
-static const uint16_t CT_CV_T_Q8 = 179;           // provisional-T CV threshold 0.7
 static const uint16_t CT_C1_Q8 = 512;             // population threshold floor C1 = 2
-static const uint16_t CT_C2_Q8 = 1024;            // population CV scaling C2 = 4
+static const uint8_t CT_C2S_NUM = 5, CT_C2S_DEN = 4; // threshold slope: 1.25*sigma
+static const uint16_t CT_SIGMA_T_Q8 = 384;        // provisional-T sigma >= 1.5 counts
+static const uint8_t CT_BASE_SHIFT = 5;           // baseline EWMA alpha = 1/32
+static const uint16_t CT_VAR_FLOOR_Q8 = 256;      // variance gate floor: 1.0 count
 static const uint16_t CT_K3 = 3;                  // churn normalization K3
 static const uint16_t CT_K4 = 3;                  // retention K4 (diagnostic channel)
 static const uint16_t CT_K5 = 3;                  // turnover normalization K5 (trace-tunable)
@@ -153,13 +161,13 @@ static inline bool ct_evidence_update(uint16_t &ewma, uint8_t &persist,
 // every segment commit (the accumulator/segment identity space is reset in
 // both cases, so SSID bit indices and all baselines lose meaning).
 static void ct_reset_segment_stats() {
-  ct_sum_b = 0; ct_sum_s = 0; ct_n_obs = 0;
-  ct_sum_b2 = 0; ct_sum_s2 = 0;
+  ct_ewma_mu_b_q8 = 0; ct_ewma_mu_s_q8 = 0;
+  ct_ewma_var_b_q16 = 0; ct_ewma_var_s_q16 = 0;
   ct_min_b = 0; ct_max_b = 0; ct_min_s = 0; ct_max_s = 0;
   ct_have_obs = false;
-  ct_sum_ab_b = 0; ct_sum_ab_s = 0;
+  ct_ewma_m_ab_b_q8 = 0; ct_ewma_m_ab_s_q8 = 0;
   ct_prev_smask = 0; ct_sum_r = 0; ct_sum_r2 = 0; ct_n_ret = 0;
-  ct_sum_turn = 0;
+  ct_ewma_m_turn_q8 = 0;
   ct_ewma_pop = 0; ct_ewma_churn = 0; ct_ewma_ret = 0; ct_ewma_turn = 0;
   ct_persist_pop = 0; ct_persist_churn = 0; ct_persist_ret = 0;
   ct_persist_turn = 0;
@@ -385,82 +393,108 @@ void processCtData() {
       }
     }
 
-    uint16_t n_pre = ct_n_obs; // valid windows already in the population stats
+    // Valid windows already absorbed by the baselines = win - 1
+    // (window_count was incremented above; identical lifecycle to the
+    // former ct_n_obs counter — reset with the segment, post-increment).
+    uint16_t n_pre = (uint16_t)(win - 1);
 
     // Per-channel trigger-crossing flags for the [CT-TRIG] diagnostic:
     // true exactly on the window where persistence reaches N_MIN from below.
     bool cross_pop = false, cross_churn = false, cross_ret = false,
          cross_turn = false;
 
-    // ---- Channel 1: POPULATION [B, S] ----
-    // Evidence is measured against the pre-update baseline (the running mean
-    // established BEFORE this window), then the baseline absorbs the window.
-    // Variance: E[x^2] - E[x]^2 with per-term integer division (no overflow:
-    // sum_b2/n and (sum_b/n)^2 are both <= 48^2).
-    uint16_t cv_seg_q8 = 0;
-    if (n_pre >= 1) {
-      uint32_t mu_b_q8 = ((uint32_t)ct_sum_b * 256) / n_pre;
-      uint32_t mu_s_q8 = ((uint32_t)ct_sum_s * 256) / n_pre;
-      uint32_t db_q8 = (cur_b * 256 > mu_b_q8) ? cur_b * 256 - mu_b_q8
-                                               : mu_b_q8 - cur_b * 256;
-      uint32_t ds_q8 = (cur_s * 256 > mu_s_q8) ? cur_s * 256 - mu_s_q8
-                                               : mu_s_q8 - cur_s * 256;
+    // ---- Channel 1: POPULATION [B, S] — horizon-bounded baselines ----
+    // mu: EWMA (alpha = 1/32), seeded with the EXACT first valid sample
+    // (never EWMA-from-zero). var: EWMA of squared residuals vs the
+    // post-update mu, Q8.16, excursion-gated (Huber-style): updated only
+    // when n_pre < 4 (cold-start warm-up) or |resid| <= 3*sigma + 1 count,
+    // so sigma describes regime noise and never learns the transitions.
+    // Evidence: D = max(|dB|,|dS|) vs the PRE-update baseline, normalized
+    // by the absolute-noise threshold thr = C1 + 1.25*sigma (the CV ratio
+    // is ill-conditioned exactly during mean collapses). Evidence starts
+    // at the 3rd valid window (uniform cold start).
+    uint16_t sig_b_q8 = 0, sig_s_q8 = 0;
+    if (n_pre == 0) {
+      ct_ewma_mu_b_q8 = (uint16_t)(cur_b * 256); // exact seed
+      ct_ewma_mu_s_q8 = (uint16_t)(cur_s * 256);
+      ct_ewma_var_b_q16 = 0;
+      ct_ewma_var_s_q16 = 0;
+      Serial.printf("[CT-SEED] win=%u mu=%u/%u\n", (unsigned)win,
+                    (unsigned)cur_b, (unsigned)cur_s);
+    } else {
+      sig_b_q8 = ct_isqrt32(ct_ewma_var_b_q16); // Q8.8 (var is Q8.16)
+      sig_s_q8 = ct_isqrt32(ct_ewma_var_s_q16);
+      uint32_t db_q8 = (cur_b * 256 > ct_ewma_mu_b_q8)
+                           ? cur_b * 256 - ct_ewma_mu_b_q8
+                           : ct_ewma_mu_b_q8 - cur_b * 256;
+      uint32_t ds_q8 = (cur_s * 256 > ct_ewma_mu_s_q8)
+                           ? cur_s * 256 - ct_ewma_mu_s_q8
+                           : ct_ewma_mu_s_q8 - cur_s * 256;
       uint32_t d_pop_q8 = (db_q8 > ds_q8) ? db_q8 : ds_q8;
-
       if (n_pre >= 2) {
-        int32_t var_b = (int32_t)(ct_sum_b2 / n_pre) -
-                        (int32_t)((ct_sum_b / n_pre) * (ct_sum_b / n_pre));
-        int32_t var_s = (int32_t)(ct_sum_s2 / n_pre) -
-                        (int32_t)((ct_sum_s / n_pre) * (ct_sum_s / n_pre));
-        if (var_b < 0) var_b = 0; // integer-truncation guard
-        if (var_s < 0) var_s = 0;
-        uint16_t sig_b_q8 = (uint16_t)ct_isqrt32((uint32_t)var_b) << 8;
-        uint16_t sig_s_q8 = (uint16_t)ct_isqrt32((uint32_t)var_s) << 8;
-        uint16_t cv_b_q8, cv_s_q8;
-        if (mu_b_q8 == 0)
-          cv_b_q8 = (sig_b_q8 > 0) ? CT_CV_MAX_Q8 : 0; // case C / case B
-        else
-          cv_b_q8 = (sig_b_q8 * 256) / mu_b_q8;
-        if (cv_b_q8 > CT_CV_MAX_Q8) cv_b_q8 = CT_CV_MAX_Q8;
-        if (mu_s_q8 == 0)
-          cv_s_q8 = (sig_s_q8 > 0) ? CT_CV_MAX_Q8 : 0;
-        else
-          cv_s_q8 = (sig_s_q8 * 256) / mu_s_q8;
-        if (cv_s_q8 > CT_CV_MAX_Q8) cv_s_q8 = CT_CV_MAX_Q8;
-        cv_seg_q8 = (cv_b_q8 > cv_s_q8) ? cv_b_q8 : cv_s_q8;
-
-        // threshold = C1 + C2*CV_seg  (Q8.8: C2*CV = CV << 2 for C2 = 4)
-        uint32_t thr_q8 = CT_C1_Q8 + ((uint32_t)cv_seg_q8 << 2);
+        uint16_t sig_q8 = (sig_b_q8 > sig_s_q8) ? sig_b_q8 : sig_s_q8;
+        // thr = C1 + 1.25*sigma (Q8.8); thr >= 512, so the evidence
+        // division yields <= (12288 << 8)/512 = 6144 — fits uint16_t.
+        uint32_t thr_q8 = CT_C1_Q8 + ((uint32_t)sig_q8 * CT_C2S_NUM) / CT_C2S_DEN;
         uint16_t n_pop_q8 = (uint16_t)((d_pop_q8 << 8) / thr_q8);
         cross_pop = ct_evidence_update(ct_ewma_pop, ct_persist_pop, n_pop_q8);
-
-        // ---- Provisional E/T classification (volatility description ONLY;
-        // never resets statistics, evidence, or creates a boundary) ----
-        ct_prov_is_t = (cv_seg_q8 >= CT_CV_T_Q8);
+        // Provisional E/T (volatility description ONLY; never resets
+        // statistics, evidence, or creates a boundary): absolute noise
+        // scale, replacing the ill-conditioned CV ratio.
+        ct_prov_is_t = (sig_q8 >= CT_SIGMA_T_Q8);
       }
+      // Absorb the window AFTER evidence (baselines track, pre-update).
+      ct_ewma_mu_b_q8 = (uint16_t)((int32_t)ct_ewma_mu_b_q8 +
+          (((int32_t)cur_b * 256 - (int32_t)ct_ewma_mu_b_q8) >> CT_BASE_SHIFT));
+      ct_ewma_mu_s_q8 = (uint16_t)((int32_t)ct_ewma_mu_s_q8 +
+          (((int32_t)cur_s * 256 - (int32_t)ct_ewma_mu_s_q8) >> CT_BASE_SHIFT));
+      // Variance update, excursion-gated. |resid| <= 48<<8 = 12288, so
+      // resid^2 <= 1.51e8 fits int32_t and var (Q8.16) fits uint32_t.
+      int32_t rb_q8 = (int32_t)cur_b * 256 - (int32_t)ct_ewma_mu_b_q8;
+      int32_t rs_q8 = (int32_t)cur_s * 256 - (int32_t)ct_ewma_mu_s_q8;
+      int32_t gate_b = (int32_t)3 * sig_b_q8 + CT_VAR_FLOOR_Q8;
+      int32_t gate_s = (int32_t)3 * sig_s_q8 + CT_VAR_FLOOR_Q8;
+      if (n_pre < 4 || (rb_q8 <= gate_b && -rb_q8 <= gate_b))
+        ct_ewma_var_b_q16 +=
+            ((uint32_t)((int32_t)rb_q8 * rb_q8) >> CT_BASE_SHIFT) -
+            (ct_ewma_var_b_q16 >> CT_BASE_SHIFT);
+      if (n_pre < 4 || (rs_q8 <= gate_s && -rs_q8 <= gate_s))
+        ct_ewma_var_s_q16 +=
+            ((uint32_t)((int32_t)rs_q8 * rs_q8) >> CT_BASE_SHIFT) -
+            (ct_ewma_var_s_q16 >> CT_BASE_SHIFT);
     }
 
     // ---- Channel 2: CHURN [ΔB, ΔS] ----
-    // Excess absolute churn over the segment's own mean |Δ| (m adapts, so a
-    // sustained walking regime self-quietens). m uses windows 2..k-1, so
-    // churn evidence starts at the 3rd valid window of a segment.
+    // Excess absolute churn over the horizon EWMA of |Δ| (m adapts, so a
+    // sustained walking regime self-quietens). m is seeded with the first
+    // delta (window 2) and updated AFTER evidence; churn evidence starts
+    // at the 3rd valid window of a segment (uniform cold start).
     if (have_d) {
       uint32_t ab_b = (d_b >= 0) ? d_b : -d_b;
       uint32_t ab_s = (d_s >= 0) ? d_s : -d_s;
-      if (n_pre >= 2) { // n_pre valid windows existed; churn count = n_pre-1
-        uint32_t m_b_q8 = (ct_sum_ab_b * 256) / (n_pre - 1);
-        uint32_t m_s_q8 = (ct_sum_ab_s * 256) / (n_pre - 1);
-        uint32_t ex_b_q8 = (ab_b * 256 > m_b_q8) ? ab_b * 256 - m_b_q8 : 0;
-        uint32_t ex_s_q8 = (ab_s * 256 > m_s_q8) ? ab_s * 256 - m_s_q8 : 0;
-        uint32_t scale_b = (uint32_t)CT_K3 * (m_b_q8 < 256 ? 256 : m_b_q8);
-        uint32_t scale_s = (uint32_t)CT_K3 * (m_s_q8 < 256 ? 256 : m_s_q8);
+      if (n_pre >= 2) {
+        uint32_t ex_b_q8 = (ab_b * 256 > ct_ewma_m_ab_b_q8)
+                               ? ab_b * 256 - ct_ewma_m_ab_b_q8 : 0;
+        uint32_t ex_s_q8 = (ab_s * 256 > ct_ewma_m_ab_s_q8)
+                               ? ab_s * 256 - ct_ewma_m_ab_s_q8 : 0;
+        uint32_t scale_b = (uint32_t)CT_K3 * (ct_ewma_m_ab_b_q8 < 256
+                                                  ? 256 : ct_ewma_m_ab_b_q8);
+        uint32_t scale_s = (uint32_t)CT_K3 * (ct_ewma_m_ab_s_q8 < 256
+                                                  ? 256 : ct_ewma_m_ab_s_q8);
         uint32_t n1_q8 = (ex_b_q8 << 8) / scale_b;
         uint32_t n2_q8 = (ex_s_q8 << 8) / scale_s;
         uint16_t n_churn_q8 = (n1_q8 > n2_q8) ? (uint16_t)n1_q8 : (uint16_t)n2_q8;
-        cross_churn = ct_evidence_update(ct_ewma_churn, ct_persist_churn, n_churn_q8);
+        cross_churn = ct_evidence_update(ct_ewma_churn, ct_persist_churn,
+                                         n_churn_q8);
+        // Absorb after evidence (same horizon clock).
+        ct_ewma_m_ab_b_q8 = (uint16_t)((int32_t)ct_ewma_m_ab_b_q8 +
+            (((int32_t)ab_b * 256 - (int32_t)ct_ewma_m_ab_b_q8) >> CT_BASE_SHIFT));
+        ct_ewma_m_ab_s_q8 = (uint16_t)((int32_t)ct_ewma_m_ab_s_q8 +
+            (((int32_t)ab_s * 256 - (int32_t)ct_ewma_m_ab_s_q8) >> CT_BASE_SHIFT));
+      } else { // n_pre == 1 (have_d implies window 2): seed with first |Δ|
+        ct_ewma_m_ab_b_q8 = (uint16_t)(ab_b * 256);
+        ct_ewma_m_ab_s_q8 = (uint16_t)(ab_s * 256);
       }
-      ct_sum_ab_b += ab_b;
-      ct_sum_ab_s += ab_s;
     }
 
     // ---- Channel 3: SSID IDENTITY RETENTION ----
@@ -501,32 +535,43 @@ void processCtData() {
     // overwritten below. Needs only a previous valid window — there is no
     // ABSTAIN case, so a zero-RF -> populated transition is visible here
     // (the regime the retention channel was mathematically unable to fire
-    // on). Running mean uses windows 2..k-1, so turnover evidence starts at
-    // the 3rd valid window of a segment — the same cold start as churn.
+    // on). Baseline is the horizon EWMA (same clock as mu/var), seeded
+    // with the first turnover (window 2); evidence starts at the 3rd valid
+    // window — the same cold start as churn.
     if (n_pre >= 1) {
       uint32_t new_id = (uint32_t)__builtin_popcount(smask & ~ct_prev_smask);
       uint32_t van_id = (uint32_t)__builtin_popcount(ct_prev_smask & ~smask);
       uint32_t turnover = new_id + van_id + (uint32_t)rej;
-      if (n_pre >= 2) { // mean over windows 2..k-1 (no div-by-zero at k=2)
-        uint32_t m_turn_q8 = ((uint32_t)ct_sum_turn * 256) / (n_pre - 1);
+      if (n_pre >= 2) {
+        // Excess over the pre-update EWMA baseline (m adapts, so the onset
+        // fires and the sustained regime self-quietens). The clamp is
+        // applied before the << 8 so the shift cannot overflow: if the
+        // excess already exceeds 32*scale, evidence is at the clamp.
         uint32_t ex_turn_q8 =
-            (turnover * 256 > m_turn_q8) ? turnover * 256 - m_turn_q8 : 0;
-        uint32_t scale = (uint32_t)CT_K5 * (m_turn_q8 < 256 ? 256 : m_turn_q8);
-        uint32_t n_turn_q8 = (ex_turn_q8 << 8) / scale;
-        if (n_turn_q8 > CT_TURN_N_MAX_Q8)
-          n_turn_q8 = CT_TURN_N_MAX_Q8; // rej is unbounded per window; clamp
+            (turnover * 256 > ct_ewma_m_turn_q8)
+                ? turnover * 256 - ct_ewma_m_turn_q8 : 0;
+        uint32_t scale = (uint32_t)CT_K5 *
+                         (ct_ewma_m_turn_q8 < 256 ? 256 : ct_ewma_m_turn_q8);
+        uint32_t n_turn_q8;
+        if (ex_turn_q8 > ((uint32_t)(CT_TURN_N_MAX_Q8 >> 8)) * scale)
+          n_turn_q8 = CT_TURN_N_MAX_Q8;
+        else
+          n_turn_q8 = (ex_turn_q8 << 8) / scale;
         cross_turn = ct_evidence_update(ct_ewma_turn, ct_persist_turn,
                                         (uint16_t)n_turn_q8);
+        // Absorb after evidence (same horizon clock).
+        ct_ewma_m_turn_q8 = ct_ewma_m_turn_q8 +
+            (((int32_t)(turnover * 256) - (int32_t)ct_ewma_m_turn_q8) >>
+             CT_BASE_SHIFT);
+      } else { // n_pre == 1: seed with the first turnover (window 2)
+        ct_ewma_m_turn_q8 = turnover * 256; // u32: turnover may exceed 255
       }
-      ct_sum_turn += turnover;
     }
     ct_prev_smask = smask;
 
-    // ---- Population statistics absorb the window (after evidence) ----
-    ct_sum_b += cur_b;
-    ct_sum_s += cur_s;
-    ct_sum_b2 += (uint32_t)cur_b * cur_b;
-    ct_sum_s2 += (uint32_t)cur_s * cur_s;
+    // ---- Envelope statistics absorb the window (diagnostic range display)
+    // ---- Population mean/variance are absorbed inside the channel block
+    // above (horizon EWMAs, post-evidence).
     if (!ct_have_obs) {
       ct_min_b = cur_b; ct_max_b = cur_b;
       ct_min_s = cur_s; ct_max_s = cur_s;
@@ -537,10 +582,11 @@ void processCtData() {
       if (cur_s < ct_min_s) ct_min_s = cur_s;
       if (cur_s > ct_max_s) ct_max_s = cur_s;
     }
-    ct_n_obs++;
+    // ct_n_obs++ removed — n_pre derives from acc.window_count now.
 
     // Snapshots for the post-fence diagnostics (pre-commit segment state).
-    uint16_t snap_n = ct_n_obs, snap_sb = ct_sum_b, snap_ss = ct_sum_s;
+    uint16_t snap_mub = ct_ewma_mu_b_q8, snap_mus = ct_ewma_mu_s_q8;
+    uint16_t snap_sgb = sig_b_q8, snap_sgs = sig_s_q8; // horizon sigma
     uint8_t snap_mnb = ct_min_b, snap_mxb = ct_max_b;
     uint8_t snap_mns = ct_min_s, snap_mxs = ct_max_s;
     bool snap_have = ct_have_obs;
@@ -589,19 +635,26 @@ void processCtData() {
                     (unsigned)win, (unsigned)cur_b, db, ddb, (unsigned)cur_s, ds, dds);
     }
     {
-      char mb[12], ms[12], rb[16], rs[16];
+      char mb[12], ms[12], rb[16], rs[16], thr[12];
       if (snap_have) {
-        snprintf(mb, sizeof(mb), "%u/%u", (unsigned)(snap_sb / snap_n),
-                 (unsigned)(snap_ss / snap_n));
+        snprintf(mb, sizeof(mb), "%u.%02u", (unsigned)(snap_mub >> 8),
+                 (unsigned)(((snap_mub & 0xFF) * 100) >> 8));
+        snprintf(ms, sizeof(ms), "%u.%02u", (unsigned)(snap_mus >> 8),
+                 (unsigned)(((snap_mus & 0xFF) * 100) >> 8));
         snprintf(rb, sizeof(rb), "%u-%u", (unsigned)snap_mnb, (unsigned)snap_mxb);
         snprintf(rs, sizeof(rs), "%u-%u", (unsigned)snap_mns, (unsigned)snap_mxs);
+        uint16_t sg = (snap_sgb > snap_sgs) ? snap_sgb : snap_sgs;
+        uint32_t tq = CT_C1_Q8 + ((uint32_t)sg * CT_C2S_NUM) / CT_C2S_DEN;
+        snprintf(thr, sizeof(thr), "%u.%02u", (unsigned)(tq >> 8),
+                 (unsigned)(((tq & 0xFF) * 100) >> 8));
       } else {
         snprintf(mb, sizeof(mb), "n/a"); snprintf(ms, sizeof(ms), "n/a");
         snprintf(rb, sizeof(rb), "n/a"); snprintf(rs, sizeof(rs), "n/a");
+        snprintf(thr, sizeof(thr), "n/a");
       }
-      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s range=%s/%s\n",
+      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s range=%s/%s thr=%s\n",
                     (unsigned)win, (unsigned)obs, (unsigned)rej, (unsigned)cov,
-                    mb, rb, rs);
+                    mb, rb, rs, thr);
     }
     Serial.printf(
         "[CT-STEP5] win=%u class=%c ewma=%u/%u/%u/%u persist=%u/%u/%u/%u\n",
