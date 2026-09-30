@@ -24,6 +24,67 @@ const int TOTAL_SSID_POOL = 150;     // Total unique SSID strings shared among a
 const int EMERGENCY_CUTOFF = 15;    // Max SSIDs a single device can claim
 const int MAX_MACS = 185;
 
+// ===== CT (Counter-surveillance) v0.1 — data structures + mode shell =====
+// Storage layout frozen from the 2026-09-28 design audit (union member,
+// zero SRAM delta). Implementation is incremental: the RADIO_CT mode shell
+// (selection/entry/exit + empty processCtData dispatch) is in place; the
+// observation pipeline (beacon ingestion, environment accumulation,
+// segmentation) arrives in later steps and must not alter this layout.
+//
+// Representation contract:
+//  - BSSIDs: exact 6-byte identities, never hashed.
+//  - SSIDs: CT-local copies (never references into ssidPool/bssidCache,
+//    which are shared mutable OSINT/presentation state).
+//  - Counts are always DERIVED from the stored sets (n_bssid/n_ssid are
+//    bookkeeping mirrors, never independent truth).
+//  - Truncation flags are sticky and set ONLY on a failed insertion of a
+//    genuinely new identity — reaching capacity is NOT proof of overflow.
+//  - No BSSID<->SSID association pairs; the ratio is descriptive only.
+//  - Single accumulator: the window set and the transition-candidate set
+//    share one environment record, sequenced by CTState::candidate_active.
+//    The history ring tail (hist[current_idx]) is the live committed
+//    environment; a commit copies the accumulator into the next slot.
+#define MAX_CT_BSSIDS       48  // per window / environment identity set
+#define MAX_CT_SSIDS        32  // CT-local copied strings (32 chars + NUL)
+#define MAX_CT_ENVIRONMENTS 8   // history ring depth (incl. the live one)
+
+// Sticky truncation bits for CtEnvironment::flags — set ONLY when insertion
+// of a genuinely new identity fails because its fixed set is full.
+#define CT_FLAG_BSSID_TRUNC 0x01
+#define CT_FLAG_SSID_TRUNC  0x02
+// Committed segment classification (Step 5): bit set = T_n (transport-like),
+// clear = E_n (stable). Assigned from the segment's final provisional class
+// at commit; never present on the open accumulator (acc.flags holds only
+// truncation bits).
+#define CT_FLAG_CLASS_T     0x04
+
+struct CtEnvironment {
+  uint8_t  bssid[MAX_CT_BSSIDS][6]; // exact BSSID identities
+  char     ssid[MAX_CT_SSIDS][33];  // CT-local copies of observed SSIDs
+  uint32_t first_seen;
+  uint32_t last_seen;
+  uint16_t env_id;                  // rendered as E01, E02, ... (env_seq)
+  uint16_t window_count;            // completed Wi-Fi windows folded into this env
+  uint8_t  n_bssid;                 // derived count mirror
+  uint8_t  n_ssid;
+  uint8_t  flags;                   // bit0 bssid_trunc, bit1 ssid_trunc (sticky)
+  uint8_t  reserved;
+};  // 1,360 B, no padding (verified: host g++ layout check)
+
+struct CTState {
+  CtEnvironment hist[MAX_CT_ENVIRONMENTS]; // ring; hist[current_idx] = live env
+  CtEnvironment acc;                // sole uncommitted accumulator (window/
+                                    // candidate shared record per the design
+                                    // contract; commit copies acc -> next slot)
+  uint16_t current_idx;             // ring index of the live committed environment
+  uint16_t env_seq;                 // next environment number (E01, E02, ...)
+  uint8_t  candidate_active;        // accumulator is building a candidate
+  uint8_t  phase;                   // STABLE / CANDIDATE (segmentation state)
+  uint8_t  reserved[2];
+};  // 12,248 B — fits the union member with 2,552 B headroom (acc added by
+    // explicit approval 2026-09-29: completes the described design contract,
+    // zero SRAM delta, union boundary unchanged)
+
 struct BssidCacheEntry {
     uint32_t last_seen; // 4 bytes (Largest first)
     uint8_t bssid[6];   // 6 bytes
@@ -158,7 +219,8 @@ struct ProbeRecordShared {
   uint8_t mac_rotations;  // Tracks how many times this device has spoofed a new MAC
 };
 
-enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS, RADIO_PCAP };
+enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS, RADIO_PCAP,
+                 RADIO_CT };
 
 enum OsintTrackerType : uint8_t {
     TRACKER_NONE = 0,
@@ -296,6 +358,8 @@ static_assert(union_size >= wifi_size, "FATAL: Wi-Fi array exceeds union boundar
 static_assert(union_size >= ble_size, "FATAL: BLE array exceeds union boundary.");
 static_assert(union_size >= ap_size, "FATAL: AP array exceeds union boundary.");
 static_assert(union_size >= channel_size, "FATAL: Channel array exceeds union boundary.");
+static_assert(union_size >= sizeof(CTState),
+    "FATAL: CTState exceeds union boundary.");
 
 // Persistent OSINT layer budget check
 static_assert(osint_layer_size < 20480,
@@ -327,6 +391,7 @@ union SessionBuffer {
   ApRecord sessionApData[MAX_AP_RECORDS];
   ChannelRecord sessionChannelData[MAX_CHANNEL_RECORDS];
   LeakHistoryEntry leakHistory[MAX_LEAK_SLOTS];
+  CTState ctState;
 };
 extern LiveBuffer liveBuf;
 extern SortBuffer sortBuf;
@@ -345,6 +410,7 @@ extern BLERecord (&sessionBleData)[MAX_BLE_DEVICES];
 extern ApRecord (&sessionApData)[MAX_AP_RECORDS];
 extern ChannelRecord (&sessionChannelData)[MAX_CHANNEL_RECORDS];
 extern LeakHistoryEntry (&leakHistory)[MAX_LEAK_SLOTS];
+extern CTState (&ctState);
 
 extern volatile uint16_t liveMacCount;
 extern volatile uint32_t liveOtherBytes;

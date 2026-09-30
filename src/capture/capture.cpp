@@ -1,6 +1,7 @@
 #include "capture.h"
 #include "core/radio.h"
 #include "modes/ap_scanner.h"
+#include "modes/ct.h"
 #include "osint/osint.h"
 #include "osint/vendor.h"
 #include "parsers/application.h"
@@ -834,6 +835,12 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         memcpy(bssidCache[target_idx].ssid, &payload[offset + 2], ssid_len);
         bssidCache[target_idx].ssid[ssid_len] = '\0';
         bssidCache[target_idx].last_seen = millis();
+
+        // CT observation feeder (Step 3): the passive scraper is CT's RX-side
+        // source. Copies (BSSID, SSID) bytes into the accumulator — no
+        // reference into bssidCache storage is retained. RADIO_CT only.
+        if (currentRadioMode == RADIO_CT)
+          ct_observe_bssid(mac3, bssidCache[target_idx].ssid);
       }
     }
   }

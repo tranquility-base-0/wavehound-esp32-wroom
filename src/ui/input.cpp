@@ -273,6 +273,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         else if (currentRadioMode == RADIO_BLE) nextMode = RADIO_AP;
         else if (currentRadioMode == RADIO_AP) nextMode = RADIO_CHANNELS;
         else if (currentRadioMode == RADIO_CHANNELS) nextMode = RADIO_PCAP;
+        else if (currentRadioMode == RADIO_PCAP) nextMode = RADIO_CT;
         else nextMode = RADIO_WIFI;
 
         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
@@ -303,6 +304,11 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           tft.drawRect(300, 190, 150, 40, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: PCAP", 375, 210);
+        } else if (nextMode == RADIO_CT) {
+          tft.fillRect(300, 190, 150, 40, TFT_NAVY);
+          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.setTextColor(TFT_WHITE);
+          tft.drawString("MODE: CT", 375, 210);
         }
 
         bool foxhunt_available = false;
@@ -357,7 +363,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
 
         force_ui_refresh = true;
 
-        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP) {
+        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT) {
             esp_wifi_set_promiscuous(true);
         }
 

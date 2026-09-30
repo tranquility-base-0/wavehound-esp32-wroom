@@ -22,6 +22,11 @@ const int HOP_INTERVAL = 300;
 const int LOCKED_UPDATE_INTERVAL = 2000;
 const int BLE_UPDATE_INTERVAL = 2000;
 
+// CT (RADIO_CT) v0.1: fixed Wi-Fi observation window. A window is a plain
+// observation interval spanning the existing CT channel sweep — no second
+// timing system, no BLE interleaving yet.
+const int CT_WIFI_WINDOW_MS = 5000;
+
 // Mutable radio state (defined in radio.cpp)
 extern RadioMode currentRadioMode;
 extern int current_ch_idx;

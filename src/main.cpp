@@ -5,6 +5,7 @@
 #include "esp_wifi.h"
 #include "modes/ap_scanner.h"
 #include "modes/ble.h"
+#include "modes/ct.h"
 #include "modes/channel_scanner.h"
 #include "modes/wifi.h"
 #include "osint/osint.h"
@@ -170,6 +171,9 @@ void loop() {
   runProbeCorrelationEngine();
   PROF_TIME(processLiveDumpQueue(), prof_dump_us, prof_dump_max, prof_dump_n);
   PROF_TIME(processLeakQueue(), prof_leak_us, prof_leak_max, prof_leak_n);
+  // CT window timing must be checked every tick (not only on render events),
+  // so the RADIO_CT dispatch lives here rather than in the should_render gate.
+  processCtData();
 
   uint16_t t_x = 0, t_y = 0;
   bool should_render = false;
@@ -208,6 +212,8 @@ void loop() {
       capture_bytes_render = capture_bytes_tick;
       capture_bytes_tick = 0;
     }
+    // RADIO_CT dispatch moved to the every-tick background section above
+    // (window expiry is time-driven, not render-driven).
 
     pause_sniffing = false; // Unlock immediately!
 
@@ -223,7 +229,7 @@ void loop() {
     }
     // Do NOT add SCREEN_LEAK_LIST here. It updates itself asynchronously!
 
-    Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap());
+    // Serial.printf("Free Heap: %d bytes\n", ESP.getFreeHeap()); // cut: duplicate of the [DIAG] heap print below
   }
   // ==========================================
   // ASYNCHRONOUS DIAGNOSTICS (Runs every 3 seconds)
@@ -231,31 +237,22 @@ void loop() {
   static uint32_t last_debug_print = 0;
   if (millis() - last_debug_print > 3000) {
 
-    uint32_t isr_att = leak_isr_attempts;
-    uint32_t isr_drop = leak_isr_dropped;
+    // (funnel/drops/heap/watermark snapshot locals commented with their prints)
 
-    uint32_t f_seen = leak_funnel_seen;
-    uint32_t f_suppressed = leak_funnel_suppressed;
-    uint32_t f_shipped = leak_funnel_shipped;
-    uint32_t ld_drop = live_dump_dropped;
-    uint32_t ui_t = ui_total_arrived;
-    uint32_t ui_d = ui_dropped_packets;
-    uint32_t cons = live_dump_consumed;
-
-    Serial.printf("[DIAG] Funnel: Seen=%u | Suppressed=%u | Shipped=%u\n",
-                  f_seen, f_suppressed, f_shipped);
-
-    Serial.printf("[DIAG] Drops: liveDumpQueue=%u | "
-                  "leakQueue ISR=%u/%u | Core1=%u/%u\n",
-                  ld_drop, isr_drop, isr_att, leak_core1_dropped,
-                  leak_core1_attempts);
+    // Serial.printf("[DIAG] Funnel: Seen=%u | Suppressed=%u | Shipped=%u\n",
+    //               f_seen, f_suppressed, f_shipped);
+    //
+    // Serial.printf("[DIAG] Drops: liveDumpQueue=%u | "
+    //               "leakQueue ISR=%u/%u | Core1=%u/%u\n",
+    //               ld_drop, isr_drop, isr_att, leak_core1_dropped,
+    //               leak_core1_attempts);
 
     Serial.printf("[DIAG] Free Heap: %d bytes\n", ESP.getFreeHeap());
 
-    Serial.printf("[DIAG] Diversity stack high-water: %u bytes free | now: %u "
-                  "bytes free\n",
-                  (unsigned)g_div_stack_highwater,
-                  (unsigned)g_div_stack_free_now);
+    // Serial.printf("[DIAG] Diversity stack high-water: %u bytes free | now: %u "
+    //               "bytes free\n",
+    //               (unsigned)g_div_stack_highwater,
+    //               (unsigned)g_div_stack_free_now);
 
     uint32_t pend_ms = prof_pend_us / 1000, pend_mx = prof_pend_max / 1000;
     uint32_t dump_ms = prof_dump_us / 1000, dump_mx = prof_dump_max / 1000;
@@ -276,10 +273,10 @@ void loop() {
                   (unsigned)prof_wf_n, (unsigned)wf_ms, (unsigned)wf_mx,
                   (unsigned)wf_avg);
 
-    Serial.printf(
-        "[PROF] qmax=%u over18=%u cons=%u | uiTot=%u uiDrop=%u ldDrop=%u\n",
-        (unsigned)prof_qmax, (unsigned)prof_over18, (unsigned)cons,
-        (unsigned)ui_t, (unsigned)ui_d, (unsigned)ld_drop);
+    // Serial.printf(
+    //     "[PROF] qmax=%u over18=%u cons=%u | uiTot=%u uiDrop=%u ldDrop=%u\n",
+    //     (unsigned)prof_qmax, (unsigned)prof_over18, (unsigned)cons,
+    //     (unsigned)ui_t, (unsigned)ui_d, (unsigned)ld_drop); // cut: duplicate-cadence PROF line; funnel/drops counters still reset below
 
     leak_funnel_seen = 0;
     leak_funnel_suppressed = 0;

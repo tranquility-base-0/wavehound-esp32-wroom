@@ -76,6 +76,9 @@ void drawChartHeader() {
       snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (LOCKED)", target_channel);
     }
   }
+  else if (currentRadioMode == RADIO_CT) {
+    snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | CT SWEEP", CHANNELS[current_ch_idx]);
+  }
   else if (currentRadioMode == RADIO_WIFI) {
     if (!target_locked) {
       snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | FREE AIRSPACE", CHANNELS[current_ch_idx]);
@@ -125,6 +128,11 @@ void drawChartFooter() {
         if (currentBleSortMode == SORT_BLE_HITS) { strcpy(metricStr, "SORT: HITS"); tft.setTextColor(TFT_WHITE); }
         else if (currentBleSortMode == SORT_BLE_DIST) { strcpy(metricStr, "SORT: DIST"); tft.setTextColor(TFT_GREEN); }
         else if (currentBleSortMode == SORT_BLE_AGE) { strcpy(metricStr, "SORT: AGE"); tft.setTextColor(TFT_BLUE); }
+      }
+      else if (currentRadioMode == RADIO_CT) {
+        // CT shell: no ranked list yet, so the sort control is inert.
+        strcpy(metricStr, "SORT: N/A");
+        tft.setTextColor(TFT_WHITE);
       }
 
       tft.drawString(metricStr, 72, 308);

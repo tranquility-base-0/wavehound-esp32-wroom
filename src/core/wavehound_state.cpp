@@ -17,6 +17,7 @@ BLERecord (&sessionBleData)[MAX_BLE_DEVICES] = sessionBuf.sessionBleData;
 ApRecord (&sessionApData)[MAX_AP_RECORDS] = sessionBuf.sessionApData;
 ChannelRecord (&sessionChannelData)[MAX_CHANNEL_RECORDS] = sessionBuf.sessionChannelData;
 LeakHistoryEntry (&leakHistory)[MAX_LEAK_SLOTS] = sessionBuf.leakHistory;
+CTState (&ctState) = sessionBuf.ctState;
 
 volatile uint16_t liveMacCount = 0;
 volatile uint32_t liveOtherBytes = 0;

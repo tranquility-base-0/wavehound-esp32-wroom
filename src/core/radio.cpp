@@ -222,7 +222,12 @@ void switchRadioMode(RadioMode targetMode) {
   sessionChannelCount = 0; sortChannelCount = 0; liveChannelCount = 0;
 
   // 3. HARDWARE ANTENNA TOGGLE
-  if (targetMode == RADIO_WIFI || targetMode == RADIO_AP || targetMode == RADIO_CHANNELS) {
+  // RADIO_CT reuses the Wi-Fi promiscuous/capture initialization path
+  // verbatim (BLE sleep, Wi-Fi wake, promiscuous on, callback reattach) —
+  // CT observes the same RF environment the Wi-Fi modes do. RADIO_PCAP is
+  // deliberately NOT added here: it inherits the prior mode's radio state
+  // (documented latent quirk), and this step must not change that.
+  if (targetMode == RADIO_WIFI || targetMode == RADIO_AP || targetMode == RADIO_CHANNELS || targetMode == RADIO_CT) {
     // Put BLE to sleep so Wi-Fi gets 100% of the antenna
     if (pBLEScan != nullptr) {
       pBLEScan->stop();
@@ -280,8 +285,9 @@ bool updateRadioHopper() {
         // ==========================================
         // RADIO-AWARE TIMERS
         // ==========================================
-        // Both Wi-Fi and AP modes need the Channel Hopper!
-        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP) {
+        // Both Wi-Fi and AP modes need the Channel Hopper! CT hops too —
+        // its environment signal is defined over a full channel sweep.
+        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT) {
             if (!target_locked) {
                 if (millis() - lastTimer > HOP_INTERVAL) {
                     lastTimer = millis();
