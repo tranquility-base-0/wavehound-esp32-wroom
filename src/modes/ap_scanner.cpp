@@ -1,4 +1,5 @@
 #include "ap_scanner.h"
+#include "ui/ui_utils.h"
 #include "core/radio.h"
 #include "core/rf_utils.h"
 #include <string.h>
@@ -37,32 +38,6 @@ void ingestBeacon(uint8_t* bssid, const char* ssid, int8_t rssi) {
     // No eviction needed — beacon SSIDs are stable,
     // so a full dictionary means you've already catalogued
     // everything in the local airspace
-}
-double getSortMetric(ApRecord& record, SortMode mode) {
-    switch(mode) {
-        case SORT_TOTAL:
-            return (double)(record.tx_bytes + record.rx_bytes);
-        case SORT_TX:
-            return (double)record.tx_bytes;
-        case SORT_RX:
-            return (double)record.rx_bytes;
-        case SORT_AVG:
-            return (record.packets > 0) ? ((double)record.sum_bytes / record.packets) : 0.0;
-        case SORT_CV: {
-            if (record.packets == 0) return 0.0;
-            double mean = (double)record.sum_bytes / record.packets;
-            if (mean == 0) return 0.0;
-            double avg_sq_sum = (double)record.sum_sq_bytes / record.packets;
-            double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0;
-            return (sqrt(variance) / mean) * 100.0;
-        }
-        case SORT_DIST:
-            return (double)record.smoothedDistance;
-        case SORT_AGE:
-            return (double)record.last_seen;
-    }
-    return 0.0;
 }
 void processApData() {
     //memcpy((void*)sortApData, (void*)liveApData, sizeof(liveApData));
@@ -165,44 +140,12 @@ void processApData() {
     }
 
     // --- FAST INSERTION SORT: AP SNAPSHOT ---
-    for (int i = 1; i < sortApCount; i++) {
-        ApRecord key = sortApData[i];
-        double key_val = getSortMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getSortMetric(sortApData[j], currentSortMode) < key_val) {
-                sortApData[j + 1] = sortApData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getSortMetric(sortApData[j], currentSortMode) > key_val && key_val > 0.0) {
-                sortApData[j + 1] = sortApData[j];
-                j = j - 1;
-            }
-        }
-        sortApData[j + 1] = key;
-    }
+    insertionSort(sortApData, sortApCount, sizeof(ApRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricAp);
 
     // --- FAST INSERTION SORT: AP SESSION ---
-    for (int i = 1; i < sessionApCount; i++) {
-        ApRecord key = sessionApData[i];
-        double key_val = getSortMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getSortMetric(sessionApData[j], currentSortMode) < key_val) {
-                sessionApData[j + 1] = sessionApData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getSortMetric(sessionApData[j], currentSortMode) > key_val && key_val > 0.0) {
-                sessionApData[j + 1] = sessionApData[j];
-                j = j - 1;
-            }
-        }
-        sessionApData[j + 1] = key;
-    }
+    insertionSort(sessionApData, sessionApCount, sizeof(ApRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricAp);
 
     sortOtherBytes = 0;
     for(int i = 8; i < sortApCount; i++) {

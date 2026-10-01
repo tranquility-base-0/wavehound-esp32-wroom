@@ -18,81 +18,24 @@
 
 static void forceSessionSort() {
   if (currentRadioMode == RADIO_WIFI) {
-    for (int i = 1; i < sessionMacCount; i++) {
-      MacRecord key = sessionData[i];
-      double key_val = getSortMetric(key, currentSortMode);
-      int j = i - 1;
-      if (sort_descending) {
-        while (j >= 0 && getSortMetric(sessionData[j], currentSortMode) < key_val) {
-          sessionData[j + 1] = sessionData[j];
-          j = j - 1;
-        }
-      } else {
-        while (j >= 0 && getSortMetric(sessionData[j], currentSortMode) > key_val && key_val > 0.0) {
-          sessionData[j + 1] = sessionData[j];
-          j = j - 1;
-        }
-      }
-      sessionData[j + 1] = key;
-    }
+    insertionSort(sessionData, sessionMacCount, sizeof(MacRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricWifi);
   }
   else if (currentRadioMode == RADIO_BLE) {
-    for (int i = 1; i < sessionBleCount; i++) {
-      BLERecord key = sessionBleData[i];
-      double key_val = getBleSortMetric(key, currentBleSortMode);
-      int j = i - 1;
-      if (sort_descending) {
-        while (j >= 0 && getBleSortMetric(sessionBleData[j], currentBleSortMode) < key_val) {
-          sessionBleData[j + 1] = sessionBleData[j];
-          j = j - 1;
-        }
-      } else {
-        while (j >= 0 && getBleSortMetric(sessionBleData[j], currentBleSortMode) > key_val && key.hits > 0) {
-          sessionBleData[j + 1] = sessionBleData[j];
-          j = j - 1;
-        }
-      }
-      sessionBleData[j + 1] = key;
-    }
+    insertionSort(sessionBleData, sessionBleCount, sizeof(BLERecord),
+                  (int)currentBleSortMode, sort_descending,
+                  uiSortMetricBle, uiSortKeyValidBle);
   }
   else if (currentRadioMode == RADIO_AP) {
-    for (int i = 1; i < sessionApCount; i++) {
-      ApRecord key = sessionApData[i];
-      double key_val = getSortMetric(key, currentSortMode);
-      int j = i - 1;
-      if (sort_descending) {
-        while (j >= 0 && getSortMetric(sessionApData[j], currentSortMode) < key_val) {
-          sessionApData[j + 1] = sessionApData[j];
-          j = j - 1;
-        }
-      } else {
-        while (j >= 0 && getSortMetric(sessionApData[j], currentSortMode) > key_val && key_val > 0.0) {
-          sessionApData[j + 1] = sessionApData[j];
-          j = j - 1;
-        }
-      }
-      sessionApData[j + 1] = key;
-    }
+    insertionSort(sessionApData, sessionApCount, sizeof(ApRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricAp);
   }
   else if (currentRadioMode == RADIO_CHANNELS) {
-    for (int i = 1; i < sessionChannelCount; i++) {
-      ChannelRecord key = sessionChannelData[i];
-      double key_val = getChannelMetric(key, currentSortMode);
-      int j = i - 1;
-      if (sort_descending) {
-        while (j >= 0 && getChannelMetric(sessionChannelData[j], currentSortMode) < key_val) {
-          sessionChannelData[j + 1] = sessionChannelData[j];
-          j = j - 1;
-        }
-      } else {
-        // Prevent sorting zero-data to the top in ascending mode
-        while (j >= 0 && getChannelMetric(sessionChannelData[j], currentSortMode) > key_val && key_val > 0.0) {
-          sessionChannelData[j + 1] = sessionChannelData[j];
-          j = j - 1;
-        }
-      }
-      sessionChannelData[j + 1] = key;
-    }
+    // Original forceSessionSort guard was key_val > 0.0 (not the
+    // channel_scanner.cpp "!= 0" variant) — keep nullptr default.
+    insertionSort(sessionChannelData, sessionChannelCount,
+                  sizeof(ChannelRecord), (int)currentSortMode,
+                  sort_descending, uiSortMetricChannel);
   }
 }
 

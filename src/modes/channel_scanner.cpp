@@ -1,4 +1,5 @@
 #include "channel_scanner.h"
+#include "ui/ui_utils.h"
 #include <string.h>
 #include <cmath>
 double getChannelMetric(ChannelRecord r, SortMode mode) {
@@ -7,11 +8,10 @@ double getChannelMetric(ChannelRecord r, SortMode mode) {
   if (mode == SORT_RX) return (double)r.rx_bytes; // Uplink
   if (mode == SORT_AVG) return (r.packets > 0) ? (double)(r.sum_bytes / r.packets) : 0;
   if (mode == SORT_CV) {
-    if (r.packets == 0) return 0;
-    double mean = (double)r.sum_bytes / r.packets;
-    double variance = ((double)r.sum_sq_bytes / r.packets) - (mean * mean);
-    if (variance <= 0 || mean == 0) return 0;
-    return (sqrt(variance) / mean) * 100.0;
+    // Identical value semantics to cvPercentFromSums (verified):
+    // packets==0 -> 0; mean==0 -> 0; variance<=0 -> 0 (sqrt(0)/mean
+    // is also 0 in the generic form).
+    return cvPercentFromSums(r.sum_bytes, r.sum_sq_bytes, r.packets);
   }
   // Repurposing SORT_DIST to sort by Power (Avg RSSI)
   if (mode == SORT_DIST) return (double)r.avg_rssi;
@@ -57,44 +57,15 @@ void processChannelData() {
     }
 
     // --- DYNAMIC INSERTION SORT: CHANNEL SNAPSHOT ---
-    for (int i = 1; i < sortChannelCount; i++) {
-        ChannelRecord key = sortChannelData[i];
-        double key_val = getChannelMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getChannelMetric(sortChannelData[j], currentSortMode) < key_val) {
-                sortChannelData[j + 1] = sortChannelData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getChannelMetric(sortChannelData[j], currentSortMode) > key_val && key_val != 0) {
-                sortChannelData[j + 1] = sortChannelData[j];
-                j = j - 1;
-            }
-        }
-        sortChannelData[j + 1] = key;
-    }
+    insertionSort(sortChannelData, sortChannelCount, sizeof(ChannelRecord),
+                  (int)currentSortMode, sort_descending,
+                  uiSortMetricChannel, uiSortKeyValidChannel);
 
     // --- DYNAMIC INSERTION SORT: CHANNEL SESSION ---
-    for (int i = 1; i < sessionChannelCount; i++) {
-        ChannelRecord key = sessionChannelData[i];
-        double key_val = getChannelMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getChannelMetric(sessionChannelData[j], currentSortMode) < key_val) {
-                sessionChannelData[j + 1] = sessionChannelData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getChannelMetric(sessionChannelData[j], currentSortMode) > key_val && key_val != 0) {
-                sessionChannelData[j + 1] = sessionChannelData[j];
-                j = j - 1;
-            }
-        }
-        sessionChannelData[j + 1] = key;
-    }
+    insertionSort(sessionChannelData, sessionChannelCount,
+                  sizeof(ChannelRecord), (int)currentSortMode,
+                  sort_descending, uiSortMetricChannel,
+                  uiSortKeyValidChannel);
 
     sortOtherBytes = 0;
     for(int i = 6; i < sortChannelCount; i++) {

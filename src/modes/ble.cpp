@@ -1,4 +1,5 @@
 #include "ble.h"
+#include "ui/ui_utils.h"
 #include "osint/vendor.h"
 #include "core/rf_utils.h"
 #include <string.h>
@@ -125,42 +126,12 @@ void processBleData() {
     liveBleCount = 0;
 
     // --- FAST INSERTION SORT: BLE SNAPSHOT ---
-    for (int i = 1; i < sortBleCount; i++) {
-        BLERecord key = sortBleData[i];
-        double key_val = getBleSortMetric(key, currentBleSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getBleSortMetric(sortBleData[j], currentBleSortMode) < key_val) {
-                sortBleData[j + 1] = sortBleData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getBleSortMetric(sortBleData[j], currentBleSortMode) > key_val && key.hits > 0) {
-                sortBleData[j + 1] = sortBleData[j];
-                j = j - 1;
-            }
-        }
-        sortBleData[j + 1] = key;
-    }
+    insertionSort(sortBleData, sortBleCount, sizeof(BLERecord),
+                  (int)currentBleSortMode, sort_descending,
+                  uiSortMetricBle, uiSortKeyValidBle);
 
     // --- FAST INSERTION SORT: BLE SESSION ---
-    for (int i = 1; i < sessionBleCount; i++) {
-        BLERecord key = sessionBleData[i];
-        double key_val = getBleSortMetric(key, currentBleSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getBleSortMetric(sessionBleData[j], currentBleSortMode) < key_val) {
-                sessionBleData[j + 1] = sessionBleData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getBleSortMetric(sessionBleData[j], currentBleSortMode) > key_val && key.hits > 0) {
-                sessionBleData[j + 1] = sessionBleData[j];
-                j = j - 1;
-            }
-        }
-        sessionBleData[j + 1] = key;
-    }
+    insertionSort(sessionBleData, sessionBleCount, sizeof(BLERecord),
+                  (int)currentBleSortMode, sort_descending,
+                  uiSortMetricBle, uiSortKeyValidBle);
 }

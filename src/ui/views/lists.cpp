@@ -567,12 +567,10 @@ void drawDeviceList() {
         double mean = 0.0; double cv_percent = 0.0;
         if (sessionData[i].packets > 0) {
             mean = (double)sessionData[i].sum_bytes / (double)sessionData[i].packets;
-            double avg_sq_sum = (double)sessionData[i].sum_sq_bytes / (double)sessionData[i].packets;
-            double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0;
-            double std_dev = sqrt(variance);
-            if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
+        cv_percent = cvPercentFromSums(sessionData[i].sum_bytes,
+                                       sessionData[i].sum_sq_bytes,
+                                       sessionData[i].packets);
 
         char firstSeenStr[8], lastSeenStr[8], ageCombo[16];
         getAgeString(sessionData[i].first_seen, firstSeenStr, sizeof(firstSeenStr));
@@ -722,12 +720,10 @@ void drawDeviceList() {
         double cv_percent = 0.0;
         if (sessionApData[i].packets > 0) {
             mean = (double)sessionApData[i].sum_bytes / (double)sessionApData[i].packets;
-            double avg_sq_sum = (double)sessionApData[i].sum_sq_bytes / (double)sessionApData[i].packets;
-            double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0;
-            double std_dev = sqrt(variance);
-            if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
+        cv_percent = cvPercentFromSums(sessionApData[i].sum_bytes,
+                                       sessionApData[i].sum_sq_bytes,
+                                       sessionApData[i].packets);
 
         char avgStr[6];
         formatShortUnit((uint32_t)mean, avgStr, sizeof(avgStr));
@@ -775,12 +771,10 @@ void drawDeviceList() {
         double cv_percent = 0.0;
         if (sessionChannelData[i].packets > 0) {
             mean = (double)sessionChannelData[i].sum_bytes / (double)sessionChannelData[i].packets;
-            double avg_sq_sum = (double)sessionChannelData[i].sum_sq_bytes / (double)sessionChannelData[i].packets;
-            double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0;
-            double std_dev = sqrt(variance);
-            if (mean > 0) cv_percent = (std_dev / mean) * 100.0;
         }
+        cv_percent = cvPercentFromSums(sessionChannelData[i].sum_bytes,
+                                       sessionChannelData[i].sum_sq_bytes,
+                                       sessionChannelData[i].packets);
 
         float avg_rssi = sessionChannelData[i].avg_rssi;
         double std_dev_rssi = sqrt(sessionChannelData[i].ema_variance);

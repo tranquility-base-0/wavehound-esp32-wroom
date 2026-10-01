@@ -8,5 +8,4 @@ extern BeaconEntry beaconDict[MAX_BEACON_DICT];
 extern uint8_t beaconDictCount;
 
 void ingestBeacon(uint8_t* bssid, const char* ssid, int8_t rssi);
-double getSortMetric(ApRecord& record, SortMode mode);
 void processApData();

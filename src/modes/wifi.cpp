@@ -1,37 +1,10 @@
 #include "wifi.h"
+#include "ui/ui_utils.h"
 #include "osint/vendor.h"
 #include "core/rf_utils.h"
 #include <string.h>
 int device_current_page = 0;
 const int DEVICES_PER_PAGE = 13; // 9pt font with 18px line spacing fits 13 devices perfectly
-double getSortMetric(MacRecord& record, SortMode mode) {
-    switch(mode) {
-        case SORT_TOTAL:
-            return (double)(record.tx_bytes + record.rx_bytes);
-        case SORT_TX:
-            return (double)record.tx_bytes;
-        case SORT_RX:
-            return (double)record.rx_bytes;
-        case SORT_AVG:
-            return (record.packets > 0) ? ((double)record.sum_bytes / record.packets) : 0.0;
-        case SORT_CV: {
-            if (record.packets == 0) return 0.0;
-            double mean = (double)record.sum_bytes / record.packets;
-            if (mean == 0) return 0.0;
-            double avg_sq_sum = (double)record.sum_sq_bytes / record.packets;
-            double variance = avg_sq_sum - (mean * mean);
-            if (variance < 0) variance = 0;
-            return (sqrt(variance) / mean) * 100.0;
-        }
-        case SORT_DIST:
-            // Swap this to smoothedDistance to use your new EMA filter!
-            return (double)record.smoothedDistance;
-        case SORT_AGE:
-            // Added the missing case and using the correct timestamp variable
-            return (double)record.last_seen;
-    }
-    return 0.0;
-}
 void processWifiData() {
     // Snapshot the live buffer for the real-time UI/sorting
     memcpy((void*)sortData, (void*)liveData, sizeof(liveData));
@@ -112,44 +85,12 @@ void processWifiData() {
     liveOtherBytes = 0;
 
     // --- FAST INSERTION SORT: WI-FI SNAPSHOT ---
-    for (int i = 1; i < sortMacCount; i++) {
-        MacRecord key = sortData[i];
-        double key_val = getSortMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getSortMetric(sortData[j], currentSortMode) < key_val) {
-                sortData[j + 1] = sortData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getSortMetric(sortData[j], currentSortMode) > key_val && key_val > 0.0) {
-                sortData[j + 1] = sortData[j];
-                j = j - 1;
-            }
-        }
-        sortData[j + 1] = key;
-    }
+    insertionSort(sortData, sortMacCount, sizeof(MacRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricWifi);
 
     // --- FAST INSERTION SORT: WI-FI SESSION ---
-    for (int i = 1; i < sessionMacCount; i++) {
-        MacRecord key = sessionData[i];
-        double key_val = getSortMetric(key, currentSortMode);
-        int j = i - 1;
-
-        if (sort_descending) {
-            while (j >= 0 && getSortMetric(sessionData[j], currentSortMode) < key_val) {
-                sessionData[j + 1] = sessionData[j];
-                j = j - 1;
-            }
-        } else {
-            while (j >= 0 && getSortMetric(sessionData[j], currentSortMode) > key_val && key_val > 0.0) {
-                sessionData[j + 1] = sessionData[j];
-                j = j - 1;
-            }
-        }
-        sessionData[j + 1] = key;
-    }
+    insertionSort(sessionData, sessionMacCount, sizeof(MacRecord),
+                  (int)currentSortMode, sort_descending, uiSortMetricWifi);
 
     // Calculate "Other" for the live waterfall chart
     sortOtherBytes = liveOtherBytes;
