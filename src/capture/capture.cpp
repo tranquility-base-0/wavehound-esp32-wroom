@@ -772,6 +772,12 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
   if (len < 24)
     return; // Safety check ensures bytes 22 and 23 exist!
 
+  // CT per-window byte traffic (Core 0): same frame-length interpretation as
+  // the ApRecord traffic accounting (sig_len per received frame, FCS
+  // included). Snapshot + clear happen under the Core-1 window-close fence.
+  if (currentRadioMode == RADIO_CT)
+    ct_window_bytes += len;
+
   // Extract MAC addresses immediately since we need them for both modes
   uint8_t *addr1 = payload + 4;  // Receiver
   uint8_t *addr2 = payload + 10; // Transmitter
@@ -1267,13 +1273,22 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
         // ONLY pass the Tag 221 guess if the MAC is randomized!
         // If it is a physical MAC, pass an empty string so Core 1 checks the SD
         // Card.
+        int probe_slot;
         if (is_randomized) {
-          processProbeRequestShared(addr2, final_ssid, ie_vendor,
+          probe_slot = processProbeRequestShared(addr2, final_ssid, ie_vendor,
                                     pkt->rx_ctrl.rssi, live_hw_hash);
         } else {
-          processProbeRequestShared(addr2, final_ssid, "", pkt->rx_ctrl.rssi,
-                                    live_hw_hash);
+          probe_slot = processProbeRequestShared(addr2, final_ssid, "",
+                                                 pkt->rx_ctrl.rssi,
+                                                 live_hw_hash);
         }
+        // CT probe presence (Core 0): mark the tracker slot that recorded
+        // this request; the identity is re-read from the slot under the
+        // commit fence. Within-env slot handover loses the outgoing device's
+        // presence (false-negative only — the commit-time occupant always
+        // genuinely probed during the env).
+        if (probe_slot >= 0 && currentRadioMode == RADIO_CT)
+          ct_probe_hit_mask |= (uint64_t)1 << probe_slot;
       }
     }
     return; // EXIT EARLY: Do not let Management frames hit the bandwidth math!

@@ -18,7 +18,11 @@ int crossReferenceProbeToBeacons(int probe_idx, uint8_t* matched_bssid_out, int8
 double getProbeMetric(ProbeRecordShared record, ProbeSortMode mode);
 void sortProbeList();
 int addSsidToPool(const char* ssid, int head_idx, bool &already_exists, bool &added, uint8_t current_count);
-void processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor = "", int8_t rssi = -100, uint32_t hw_hash = 0);
+// Returns the tracker slot index the request was recorded in (>= 0), or -1
+// if the request was dropped. CT uses the returned slot to mark per-window
+// probe presence (ct_probe_hit_mask) — the slot is read once under the
+// commit fence and never stored as a persistent reference.
+int processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor = "", int8_t rssi = -100, uint32_t hw_hash = 0);
 void processPendingVendors();
 void runProbeCorrelationEngine();
 void initProbeTracker();

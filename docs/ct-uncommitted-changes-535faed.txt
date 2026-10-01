@@ -1,0 +1,820 @@
+=====================================================================
+WAVEHOUND CT (CHASE TAIL / COUNTER-SURVEILLANCE) IMPLEMENTATION RECORD
+Baseline for reimplementation: commit 535faed
+("Fix ARP scanner identity and TCP SYN classification")
+Recorded: 2026-10-01 (working tree, uncommitted state)
+=====================================================================
+
+0. SCOPE AND BASELINE CORRECTION
+--------------------------------
+The working tree is on main at commit 402dd1b ("Implement CT horizon
+baselines and update notes"). 535faed is NOT the immediate parent: it is
+7 commits back. A revert to 535faed therefore discards not only the
+uncommitted CT work but also five intermediate committed changes:
+
+  ffbaac9 Add Maimon TCP scan detection
+  70022ff Reduce TCP scan episode window to 5s
+  03b6d7a Restore TCP alert first and last seen
+  7c69707 Gate Maimon reporting by port diversity
+  05dcc33 Fix recon alert expiry and persistence
+  e0b2711 Implement CT mode: observation windows, segmentation evidence
+          channels, identity-turnover channel, observation-quality counters
+  402dd1b Implement CT horizon baselines and update notes
+
+This record documents the ENTIRE delta `git diff 535faed -> working tree`
+(15 files, +2409/-314) so any of it can be reimplemented against 535faed.
+Uncommitted-on-top-of-402dd1b deltas (6 files: capture.cpp,
+wavehound_state.h, ct.cpp, ct.h, osint.cpp, osint.h) are flagged below
+as [UNCOMMITTED] where they differ from 402dd1b.
+
+Files covered by the full delta:
+  Chase Tail Notes.md            (new, 284 lines — design/decision log)
+  references/ct-segmentation.md  (new, 39 lines — implementation-state log)
+  src/capture/capture.cpp        (+1015/-314 region)
+  src/core/radio.cpp             (+12/-2)
+  src/core/radio.h               (+5)
+  src/core/wavehound_state.cpp   (+1)
+  src/core/wavehound_state.h     (+157)
+  src/main.cpp                   (+53/-21 approx)
+  src/modes/ct.cpp               (new, 956 lines)
+  src/modes/ct.h                 (new, 24 lines)
+  src/osint/osint.cpp            (+4/-2)
+  src/osint/osint.h              (+6/-2)
+  src/ui/input.cpp               (+8)
+  src/ui/views/chart.cpp         (+20/-9)
+  src/ui/views/lists.cpp         (+139)
+
+The working-tree diff is completely accounted for by this document.
+
+1. CT CONCEPT AND ARCHITECTURE (design contract)
+------------------------------------------------
+CT is a counter-surveillance mode: detect devices that persist across
+CHANGING RF environments. Environments are RF-identity neighborhoods,
+not places. Two questions: (1) did the environment change (segmentation),
+(2) what persisted across the change (persistence payload).
+
+Dual-core ownership model:
+  Core 0 (RX context, sniffer_callback):
+    - ct_observe_bssid() inserts identities into acc
+    - marks per-window touch masks, byte counter, probe hit mask
+    - counts rejected inserts
+  Core 1 (main loop, processCtData()):
+    - fixed 5 s window clock; window close under pause fence (F10)
+    - validity = window closed while pause_sniffing == false
+    - three evidence channels (per window), 2-of-3 quorum -> commit
+    - acc -> hist ring (committed metrics), persistence pass
+    - [CT-*] serial diagnostics
+
+F10 fence discipline: structural Core-1 work runs with
+pause_sniffing = true; delay(10); ... pause_sniffing = was_paused;
+(validity is read BEFORE raising the fence; the fence restore does not
+clear a menu-held pause).
+
+Representation contract (must be preserved):
+  - BSSIDs: exact 6-byte identities, never hashed.
+  - SSIDs: CT-local copies (never references into ssidPool/bssidCache).
+  - Counts are DERIVED mirrors, never independent truth.
+  - Truncation flags are sticky and set ONLY on a failed insertion of a
+    genuinely new identity (reaching capacity is NOT proof of overflow).
+  - No BSSID<->SSID association pairs stored; ratio descriptive only.
+  - Live accumulator arrays (acc) remain authoritative for evidence;
+    no persistent references into transient probe/SSID/BSSID storage.
+  - Single accumulator acc: window set and transition-candidate set
+    share one environment record (candidate_active/phase fields exist
+    in CTState for the sequenced design; commit copies acc into the
+    next hist slot).
+
+2. CT STATE / DATA STRUCTURES (src/core/wavehound_state.h)
+----------------------------------------------------------
+Constants:
+  #define MAX_CT_BSSIDS       48   // per environment identity set
+  #define MAX_CT_SSIDS        32   // CT-local copied strings (32 chars + NUL)
+  #define MAX_CT_ENVIRONMENTS 8    // committed in e0b2711/402dd1b
+  [UNCOMMITTED] MAX_CT_ENVIRONMENTS = 10  (env history depth, metrics records)
+  [UNCOMMITTED] CT_PERSIST_DEVICES  = 20  (persistent-device table capacity)
+  [UNCOMMITTED] CT_PEND_SLOTS       = 192 (seen-once MAC pending pool capacity)
+  [UNCOMMITTED] CT_PERSIST_SSIDS    = 4   (probed-SSID copies per record)
+
+Flags:
+  CT_FLAG_BSSID_TRUNC 0x01   // sticky, failed new-identity BSSID insert
+  CT_FLAG_SSID_TRUNC  0x02   // sticky, failed new-identity SSID insert
+  CT_FLAG_CLASS_T     0x04   // committed segment classified T_n (volatile)
+  CT_PFLAG_AP         0x01   // device has AP/BSSID evidence
+  CT_PFLAG_PROBE      0x02   // device has probe/station evidence
+  CT_PFLAG_ENV_OVF    0x04   // >8 distinct envs after env_seen[] full
+                             // (list preserved, count continues)
+
+struct CtEnvironment {                 // 1360 B, no padding (host-verified)
+  uint8_t  bssid[48][6];
+  char     ssid[32][33];
+  uint32_t first_seen;                 // observation stamps; first_seen==0 =
+  uint32_t last_seen;                  //   empty-accumulator sentinel
+  uint16_t env_id;                     // rendered E01, E02, ... (env_seq)
+  uint16_t window_count;               // VALID windows folded in
+  uint8_t  n_bssid;                    // derived count mirror
+  uint8_t  n_ssid;
+  uint8_t  flags;                      // sticky truncation bits
+  uint8_t  reserved;
+};
+
+[UNCOMMITTED] struct CtEnvRecord {     // 32 B, immutable committed metrics
+  uint32_t first_seen;                 // millis of segment's first valid window
+  uint32_t last_seen;                  // millis of its last valid window
+  uint32_t byte_mean_q8kib;            // horizon EWMA per-window bytes, KiB Q8.8
+  uint32_t byte_std_q8kib;             // isqrt of byte-variance EWMA, KiB Q8.8
+  uint16_t mu_b_q8;                    // final horizon EWMA mean of B
+  uint16_t sig_b_q8;                   // isqrt of final horizon EWMA var of B
+  uint16_t mu_s_q8;
+  uint16_t sig_s_q8;
+  uint16_t env_id;                     // = env_seq at commit
+  uint16_t window_count;               // valid windows folded in
+  uint8_t  flags;                      // CLASS_T + inherited acc trunc bits
+  uint8_t  reserved;
+};
+static_assert(sizeof(CtEnvRecord) == 32, "FATAL: CtEnvRecord layout drifted");
+
+[UNCOMMITTED] struct CtPersistDevice { // 200 B, fully self-contained
+  uint32_t first_seen;                 // earliest known observation stamp
+  uint32_t last_seen;                  // most recent observation stamp
+  uint16_t env_seen[8];                // FIRST 8 distinct committed env ids,
+                                       //   insert-once, never overwritten
+  uint8_t  mac[6];                     // exact MAC identity (AP BSSID or station)
+  uint8_t  oui[3];                     // first 3 MAC bytes (descriptive for
+                                       //   randomized MACs)
+  uint8_t  country[3];                 // 802.11d country IE copy (AP only)
+  uint8_t  flags;                      // CT_PFLAG_* bits
+  uint8_t  env_count;                  // saturating u8; dedup only vs stored 8
+  char     vendor[28];                 // copied from probeList vendor when
+                                       //   available; AP rows empty (OUI kept)
+  char     ssid_hist[4][33];           // slot 0 = FIRST SSID ever (frozen at
+                                       //   promotion); slots 1..3 = latest
+                                       //   distinct (dedup against all 4)
+};
+static_assert(sizeof(CtPersistDevice) == 200, "...");
+
+struct CtPersistTable {                // [UNCOMMITTED]
+  uint8_t count;                       // occupied rows (<= CT_PERSIST_DEVICES)
+  CtPersistDevice dev[CT_PERSIST_DEVICES];
+};
+
+[UNCOMMITTED] struct CtPendMac {       // 16 B, seen-once pending pool
+  uint32_t first_seen;                 // earliest observation stamp
+  uint16_t first_env_id;               // env id of first evidencing env
+  uint8_t  mac[6];
+  uint8_t  flags;                      // CT_PFLAG_* of first evidence
+};
+static_assert(sizeof(CtPendMac) == 16, "...");
+// Carries first-seen stamp + first env id so promotion initializes the
+// persistent record WITHOUT consulting the environment ring (pending may
+// outlive ring depth). Bounded: LRU eviction by first_env_id (ties ->
+// lowest index); eviction is false-negative-only by construction.
+
+struct CtPendPool {
+  uint8_t count;                       // occupied (<= CT_PEND_SLOTS)
+  CtPendMac e[CT_PEND_SLOTS];
+};
+
+struct CTState {
+  // 402dd1b (committed): CtEnvironment hist[8]; CTState = 12,248 B,
+  //   union headroom 2,552 B over the MacRecord[185] = 14,800 B boundary.
+  // [UNCOMMITTED]: hist is CtEnvRecord[10] (compact metrics) and the
+  //   persist/pend tables are added; CTState = 8,768 B, headroom 6,032 B.
+  CtEnvRecord hist[MAX_CT_ENVIRONMENTS]; // hist[current_idx] = newest committed
+  CtEnvironment acc;                   // sole uncommitted accumulator
+  uint16_t current_idx;                // hist index of newest committed env
+  uint16_t env_seq;                    // next environment number (E01, ...)
+  uint8_t  candidate_active;
+  uint8_t  phase;                      // STABLE / CANDIDATE (sequencing state)
+  uint8_t  reserved[2];
+  CtPersistTable persist;              // [UNCOMMITTED]
+  CtPendPool   pend;                   // [UNCOMMITTED]
+};
+
+Storage placement:
+  - CTState is a union member of SessionBuffer (src/core/wavehound_state.h
+    union SessionBuffer: ... + CTState ctState). Union size is still set by
+    MacRecord[185] = 14,800 B. static_assert(union_size >= sizeof(CTState)).
+  - wavehound_state.cpp: `CTState (&ctState) = sessionBuf.ctState;`
+    reference alias (extern in the header).
+
+RadioMode enum: RADIO_CT appended last:
+  enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS,
+                   RADIO_PCAP, RADIO_CT };
+
+Other state constants: MAX_MACS 185; TOTAL_SSID_POOL 150;
+MAX_PROBE_SLOTS (probe tracker) reused by the CT probe-hit path;
+MAX_BSSID_CACHE 16; MAX_AP_RECORDS for country copy.
+
+3. MODE SHELL (radio, main, UI)
+-------------------------------
+src/core/radio.h:
+  const int CT_WIFI_WINDOW_MS = 5000;   // fixed Wi-Fi observation window
+
+src/core/radio.cpp:
+  - switchRadioMode(): RADIO_CT added to the Wi-Fi antenna-init branch
+    (BLE sleep, Wi-Fi wake, promiscuous on, callback reattach).
+    RADIO_PCAP deliberately NOT added (inherits prior radio state;
+    documented latent quirk, must not change).
+  - updateRadioHopper(): RADIO_CT added to the channel-hopper condition
+    (CT's environment signal is defined over a full channel sweep).
+
+src/ui/input.cpp:
+  - Mode cycle now PCAP -> CT -> WIFI (`nextMode = RADIO_CT` after PCAP).
+  - Mode-selection tile draws "MODE: CT" (TFT_NAVY fill).
+  - On mode commit, RADIO_CT included in the esp_wifi_set_promiscuous(true)
+    condition.
+
+src/ui/views/chart.cpp:
+  - Header banner: `CH: %02d | CT SWEEP` (CHANNELS[current_ch_idx]).
+  - Footer: RADIO_CT renders "SORT: N/A" (inert sort control).
+  - PCAP footer: static "|=2m" time scale removed; alert banner texts
+    dropped the SIREN emoji prefix; idle label changed
+    "PROMISCUOUS CAPTURE MODE" -> "NO ALERTS".
+
+src/main.cpp:
+  - processCtData() called every loop tick BEFORE the render gate
+    (window expiry is time-driven, not render-driven).
+  - Diagnostics cadence trimmed: the duplicate "Free Heap" print and the
+    [DIAG] Funnel/Drops/Diversity-stack/PROF qmax lines are commented out
+    (single [DIAG] Free Heap + [PROF] timing lines remain); counters still
+    reset below.
+  - On alert-cooldown refresh, drawChartFooter() is now called so the
+    alert banner appears without a touch and self-restores on expiry.
+
+4. OBSERVATION PIPELINE (ct.cpp: feeder, masks, window close)
+-------------------------------------------------------------
+Core-0 feeder — void ct_observe_bssid(const uint8_t *bssid, const char *ssid):
+  - Gate: if (pause_sniffing) return.
+  - ct_obs_count++ (diagnostic; one per qualifying observation).
+  - BSSID insert: exact 6-byte memcmp, linear scan of acc.bssid[0..n_bssid).
+    New: if n_bssid < 48 claim slot, n_bssid++, mark
+    ct_touch_bssid_mask bit (duplicates mark too). Full: set sticky
+    CT_FLAG_BSSID_TRUNC on acc.flags and ct_rej_count++ (no slot, no bit).
+  - SSID insert: strcmp against acc.ssid copies; new: strncpy 32+NUL,
+    mark ct_touch_ssid_mask bit. Full: sticky CT_FLAG_SSID_TRUNC +
+    ct_rej_count++.
+  - Timestamps: first_seen set iff acc.first_seen == 0 (sentinel:
+    acc memset on mode entry and at every commit; millis() nonzero long
+    before RADIO_CT reachable); last_seen = millis() always.
+    KNOWN EDGE: after commits, first_seen==0 also gates any "committed
+    exists" test — a committed-from-empty-acc record would read as
+    uncommitted; handle only if it ever occurs.
+
+Call site (capture.cpp, passive SSID scraper, after bssidCache update):
+    if (currentRadioMode == RADIO_CT)
+      ct_observe_bssid(mac3, bssidCache[target_idx].ssid);
+  (qualifying beacons/probe responses fc 0x80/0x50 with valid Tag-0 SSID;
+  no reference into bssidCache retained.)
+
+Per-window Core-0 counters (ct.cpp file-local or extern):
+  static uint64_t ct_touch_bssid_mask;  // bit i = acc.bssid[i] seen this window
+  static uint32_t ct_touch_ssid_mask;   // bit i = acc.ssid[i] seen this window
+  uint16_t ct_obs_count;                // qualifying observations (diagnostic)
+  uint16_t ct_rej_count;                // rejected genuinely-new inserts
+  uint16_t ct_chans_mask;               // channels visited this window (Core-1
+                                        //   maintained via current_ch_idx
+                                        //   transitions every loop tick)
+  uint32_t ct_window_bytes;             // [UNCOMMITTED] extern; Core 0 adds
+                                        //   `len` per received frame while
+                                        //   RADIO_CT (top of sniffer_callback,
+                                        //   same sig_len interpretation as
+                                        //   ApRecord traffic accounting)
+  uint64_t ct_probe_hit_mask;           // [UNCOMMITTED] extern; Core 0 marks
+                                        //   bit s = probeList[s] recorded the
+                                        //   probe request (see §6)
+
+Window close (processCtData(), Core 1, every loop tick):
+  - Non-CT mode: re-arm — clear touch masks, obs/rej/chans, ct_last_ch=0xFF,
+    ct_window_bytes, ct_probe_hit_mask, ct_reset_segment_stats(),
+    ct_window_running=false. Safe WITHOUT the fence (feeder call site is
+    RADIO_CT-gated; no Core-0 writer active in non-CT modes).
+  - Channel-coverage tracking per tick: if current_ch_idx != ct_last_ch,
+    set bit in ct_chans_mask. cov = popcount; < 13 = partial sweep.
+  - Window timing: ct_window_start_ms/ct_window_running file-local;
+    expire at millis() - start >= CT_WIFI_WINDOW_MS.
+  - Validity: was_paused = pause_sniffing (read BEFORE fence); valid = !was_paused.
+    An unpaused [0,0] window is a legitimate observation; a paused window
+    contributes NOTHING (no stats, no EWMA, no persistence, no E/T change,
+    no commit, no window_count increment).
+  - Under fence: snapshot + CLEAR all Core-0 counters (masks, obs, rej,
+    chans, bytes — byte snapshot is UNCONDITIONAL, mirroring masks; RX
+    callback is pause-gated so paused windows contribute no bytes; an
+    invalid window's snapshot is discarded, not folded).
+  - Valid window: acc.window_count++; win = snapshot;
+    cur_b/cur_s = popcount(bmask/smask); temporal deltas computed against
+    the previous VALID window (ct_prev_b/s, ct_prev_d_b/s, ct_have_prev,
+    ct_have_prev_d; paused windows never update ct_prev_*, so no phantom
+    churn bridges a pause). d/dd are DESCRIPTIVE ONLY, never triggers
+    (hardware result: constant speed does NOT give dd≈0).
+  - n_pre = win - 1 (windows already absorbed by baselines).
+  - Restore: pause_sniffing = was_paused; ct_window_start_ms = millis().
+
+5. SEGMENTATION EVIDENCE (horizon-bounded baselines)
+----------------------------------------------------
+All fixed-point integer, no floats. Q8.8 = value*256 for counts/means/
+evidence; Q8.16 = value^2*65536 for variance (sigma = isqrt(var) directly,
+no shift). Evidence Q8.8 clamped to 8192 (=32.0) where input unbounded
+(turnover via rej). Bounds: |resid| <= 48*256 = 12288; resid^2 <= 1.51e8
+fits int32; var fits uint32; byte path uses u64 (KiB^2 Q8.16).
+
+Constants (ct.cpp, all trace-tunables, none sacred):
+  CT_C1_Q8        512   // population threshold floor C1 = 2 counts
+  CT_C2S_NUM/DEN  5/4   // threshold slope 1.25*sigma
+  CT_SIGMA_T_Q8   384   // provisional-T boundary (sigma >= 1.5 counts)
+  CT_BASE_SHIFT   5     // baseline EWMA alpha = 1/32 (horizon ~160 s)
+  CT_VAR_FLOOR_Q8 256   // variance-gate floor (1.0 count)
+  CT_K3           3     // churn normalization K
+  CT_K5           3     // turnover normalization K
+  CT_TURN_N_MAX_Q8 8192 // turnover evidence clamp (32.0)
+  CT_N_MIN        3     // persistence length (windows)
+  evidence EWMA alpha = 1/8 (frozen since Step 5)
+
+Three LIVE channels (2-of-3 quorum): POPULATION, CHURN, TURNOVER.
+The former RETENTION channel is RETIRED (not in quorum; machinery and
+the hist-identity arrays it consumed deleted).
+
+Per-window order (evidence ALWAYS against the PRE-update baseline):
+
+  1. POPULATION [B,S]:
+     n_pre==0: EXACT seed mu = cur*256, var = 0, no evidence;
+       [CT-SEED] win=%u mu=%u/%u.
+     n_pre>=1: sigma = isqrt(var) per dimension.
+       n_pre>=2: D = max(|dB_q8|,|dS_q8|); thr_q8 = C1 + (sigma_max*5)/4
+         (>= 512); n_pop = (D<<8)/thr (<= 6144, fits u16);
+         evidence_update(pop); provisional E/T: ct_prov_is_t =
+         (sigma_max >= CT_SIGMA_T_Q8) (description only, never resets).
+     Absorb AFTER evidence:
+       mu += (cur*256 - mu) >> 5            (int32 arithmetic)
+       variance, EXCURSION-GATED (Huber-style): update only when
+         n_pre < 4 (warm-up) OR |resid| <= 3*sigma + CT_VAR_FLOOR_Q8;
+         var += (resid^2 >> 5) - (var >> 5).
+       Design intent: steps are learned by mu, never laundered into sigma;
+       without the gate a step's own residual inflates the threshold within
+       one window and self-shields the transition.
+
+  2. CHURN [|dB|,|dS|]:
+     n_pre==1 (first delta): seed m_ab with the first |delta|*256.
+     n_pre>=2: ex = max(0, |delta|*256 - m_ab) (both dims, take max);
+       scale = K3 * max(m_ab, 256); n = (ex<<8)/scale; evidence_update.
+     Absorb after evidence: m_ab += (|delta|*256 - m_ab) >> 5.
+     (Excess churn: sustained walking self-quietens as m adapts.)
+
+  3. TURNOVER (identity dynamics, adjacent-window):
+     turnover = popcount(smask & ~prev_smask)   // new SSIDs
+              + popcount(prev_smask & ~smask)   // vanished SSIDs
+              + rej                             // untracked-stream arrivals
+     No ABSTAIN case: needs only a previous valid window (empty->populated
+     IS turnover). Bit->SSID mapping stable for acc's lifetime, so mask
+     algebra IS identity algebra; no strings compared/stored. Post-commit
+     re-learn of the same environment produces ~no turnover (prev mask
+     tracks it) — no artificial post-commit spike. rej is FLUX-WEIGHTED
+     (frames x unseen identities; rejected identities are not recorded so
+     each later frame re-attempts; rej <= 2*obs).
+     n_pre==1: seed m_turn = turnover*256 (u32; can exceed 255 via rej).
+     n_pre>=2: ex = max(0, turnover*256 - m_turn); scale = K5*max(m_turn,256);
+       clamp PRE-shift: if ex > (CT_TURN_N_MAX_Q8>>8)*scale -> n = 8192
+       else n = (ex<<8)/scale; evidence_update.
+     Absorb after evidence: m_turn += (turnover*256 - m_turn) >> 5.
+     ct_prev_smask = smask (after consumption).
+
+  Common evidence mechanism — ct_evidence_update(ewma, persist, n_q8):
+    ewma = (ewma*7 + n) >> 3;            // alpha = 1/8
+    if (ewma > 256) { persist++ (cap 255); return persist == CT_N_MIN; }
+    persist = 0; return false;
+    Returns true exactly on the N_MIN-1 -> N_MIN crossing (feeds the
+    [CT-TRIG] diagnostic only; may re-fire after a drop+re-rise). The
+    persistence state IS the trigger state (no latch).
+
+  Quorum: trig = (persist_pop>=3) + (persist_churn>=3) + (persist_turn>=3);
+  if (trig >= 2) ct_commit_segment() — INSIDE the fence, BEFORE the
+  post-fence diagnostics.
+
+  Cold start (uniform): window 1 no evidence (seed); window 2 seeds
+  churn/turnover baselines; window 3+ all three channels vote.
+
+  Per-segment reset — ct_reset_segment_stats(): zeroes mu_b/s, var_b/s,
+  byte mean/var, min/max envelopes, ct_have_obs, m_ab_b/s, prev_smask,
+  m_turn, evidence EWMAs (pop/churn/turn), persistences, ct_prov_is_t,
+  derivative scratch (prev_b/s, prev_d_b/s, have flags). Called at CT
+  exit/re-entry and at every commit. Trigger state must never survive an
+  acc reset (bit indices are meaningless across it).
+
+6. COMMIT AND PERSISTENCE (ct.cpp)
+-----------------------------------
+ct_commit_segment() (fence held):
+  next = (current_idx + 1) % MAX_CT_ENVIRONMENTS;
+  hist[next] = immutable metrics snapshot:
+    first_seen/last_seen = acc stamps (duration = last - first);
+    byte_mean_q8kib, byte_std = isqrt64(byte_var); mu_b/mu_s;
+    sig_b/sig_s = isqrt32(var_b/var_s); env_id = env_seq;
+    window_count = acc.window_count;
+    flags = (acc.flags & (BSSID_TRUNC|SSID_TRUNC)) | (prov_is_t ? CLASS_T:0).
+  current_idx = next;
+  ct_persist_commit(dst.env_id, dst.window_count);   // fence still held
+  env_seq++;
+  memset(&acc, 0, sizeof(CtEnvironment));
+  ct_reset_segment_stats();
+  Ring-full overwrites oldest; env_seq keeps global order.
+
+Persistence pass (Core 1, commit time, fence held; all inputs read ONCE
+and immediately copied into CT-owned state — no persistent reference to a
+probeList slot, ssidPool node, or bssidCache entry):
+
+  ct_persist_commit(env, win):
+    - AP evidence: every BSSID in the committed acc set ->
+      ct_persist_observe(mac, is_ap=true, probe_slot=-1,
+                         acc.first_seen, acc.last_seen, env, win).
+      (Per-BSSID stamps do not exist in acc; env-level stamps are the
+      documented closest available observation times.)
+    - Probe evidence: hits = ct_probe_hit_mask; ct_probe_hit_mask = 0;
+      iterate by __builtin_ctzll, hits &= hits-1; skip s >= MAX_PROBE_SLOTS;
+      ct_persist_observe(probeList[s].mac, false, s,
+                         probeList[s].first_seen, probeList[s].last_seen,
+                         env, win) — identity re-read under the fence and
+      immediately copied.
+
+  ct_persist_mac_sane(): reject multicast/group (bit0 of byte 0), all-zero,
+  broadcast.
+
+  ct_persist_observe(mac, is_ap, probe_slot, src_first, src_last, env, win):
+    a) Already persistent (ct_persist_find): ct_persist_env_insert(env);
+       first_seen = min(first_seen, src_first); last_seen = max(...);
+       flags |= type; SSID refresh (probe: walk chain; AP:
+       ct_persist_ap_enrich — bssidCache copy becomes first-known SSID
+       ONLY while record has none); vendor copy; country copy (AP only).
+    b) Pending (ct_pend_find):
+       - same env: merge type flag, first_seen min. (AP/probe identity
+         merging within one environment.)
+       - second DISTINCT env: PROMOTE. If persist.count >= 20: evict the
+         least-recently-seen row (LRU by last_seen; ties -> lowest index),
+         log "[CT-PERSIST] win=%u evict-row idx=%u", swap-with-last,
+         count--. New row: memset; mac/oui copy; first_seen = min(src_first,
+         pend.first_seen); last_seen = src_last; env_seen[0] =
+         pend.first_env_id, env_seen[1] = env, env_count = 2;
+         flags = pend.flags | fl; SSID chain walk + vendor copy (probe) or
+         AP enrich + country copy (AP). Capture promo_first_env BEFORE
+         ct_pend_remove (see §9); remove pending entry (swap-with-last);
+         log "[CT-PERSIST] win=%u promo mac=%02X... envs=E%u,E%u".
+    c) First evidence ever: enter pending pool. Pool full (>= 192): evict
+       the entry with the SMALLEST first_env_id (ties -> lowest index) —
+       oldest-environment eviction, deterministic, false-negative-only;
+       swap-with-last. Append with first_seen/first_env_id/mac/flags.
+
+  ct_persist_env_insert(d, env): dedup against stored first 8; store while
+  < 8; once full set CT_PFLAG_ENV_OVF and only bump env_count (saturating
+  u8). Documented limitation: once the list is full, revisits of unstored
+  env ids increment the count again.
+
+  ct_persist_ssid_note(d, ssid): dedup against all 4 slots; slot 0 = first
+  SSID ever, frozen once written; otherwise memmove slots 1..3 (roll oldest)
+  and append to slot 3. Empty ('\0') slots render as none.
+
+  ct_persist_ssid_from_chain(d, probe_slot): walks probeList[slot].ssid
+  chain (first_ssid_idx -> ssidPool[].next_node_idx, arrival-ordered, tail
+  = most recent), guard TOTAL_SSID_POOL, feeds ct_persist_ssid_note.
+
+  ct_persist_copy_vendor(d, probe_slot): copies probeList vendor unless
+  already set; "Resolving..." placeholders NOT copied (unresolved device
+  keeps empty vendor + OUI for later resolution). AP rows carry OUI only.
+
+  ct_persist_copy_country(d, bssid): if unknown, scan liveApData for the
+  BSSID and copy its 3-byte country IE (cache eviction leaves it empty).
+
+7. CAPTURE/PARSER INTEGRATION (capture.cpp, osint)
+--------------------------------------------------
+[UNCOMMITTED] capture.cpp:
+  - #include "modes/ct.h" added.
+  - Top of sniffer_callback, after the len<24 guard:
+      if (currentRadioMode == RADIO_CT) ct_window_bytes += len;
+    (per received frame; len = sig_len interpretation, FCS included).
+  - Passive scraper: ct_observe_bssid call (§4).
+  - Probe path: processProbeRequestShared now returns int probe_slot;
+    both call variants (randomized / physical MAC) capture it; then
+      if (probe_slot >= 0 && currentRadioMode == RADIO_CT)
+        ct_probe_hit_mask |= (uint64_t)1 << probe_slot;
+    Semantics: within-env slot handover (a device whose probe slot is
+    evicted mid-env) loses the outgoing device's presence — false-negative
+    only; the commit-time occupant always genuinely probed during the env.
+
+osint.cpp/osint.h:
+  - processProbeRequestShared: void -> int; returns target_slot (>= 0 the
+    tracker slot the request was recorded in, -1 if dropped). Header
+    comment: CT uses the slot once under the commit fence, never stores it
+    as a persistent reference. No other behavior change.
+
+8. NON-CT CHANGES SINCE 535faed (committed in ffbaac9..05dcc33; also
+   lost by a revert to 535faed — reimplement or re-apply from git)
+--------------------------------------------------------------------
+capture.cpp ARP scanner detector (window retune + honesty fixes):
+  - ARP_SCANNERS 4; ARP_TARGETS 8; ARP_WINDOW_MS 5000;
+    ARP_REQ_MIN 10 (was 4); ARP_TGT_MIN 6 (was 4);
+    ARP_REARM_GAP_MS 10000 (was 60000); NEW ARP_REQ_RING 9 (prior-request
+    stamps; current request counted separately -> max window_reqs 10,
+    exactly reaching ARP_REQ_MIN). Slot: 116 B (was 112; ring_idx absorbed
+    by padding; 464 B total).
+  - req_count repurposed as episode overflow latch: set to 1 when the
+    target-table eviction path runs (9th+ distinct target displaced a
+    retained one). Cleared by rearm/new-scanner memset (episode-scoped).
+  - Alert text now: "ARP SCAN: %s req, %s targets over %lus|Targets:%s"
+    with req_str "10+" at ring saturation, tgt_str "8+" when full, target
+    list sorted ascending (transient stack copy, numeric IPv4 order) so
+    identical target sets serialize byte-identically (persistent-list
+    exact-text dedup keys on src_mac + text); trailing '+' appended to the
+    list ONLY when the eviction latch ran this episode.
+  - ARP alert leak record now fills meta.ip_version=4 and meta.src_ip
+    (frame_body+14, SPA) so recon renderers build line1 from meta.
+
+capture.cpp TCP recon detector (redesigned episodes):
+  - Old trailing-window slot design (TCP_SCANNERS 4, SYN ring 16, tuples 8,
+    SYN_MIN 8, DST_MIN 4, PORT_MIN 3, REARM 60 s) REPLACED by source
+    EPISODES: TCP_EPISODES 3 (ring), TCP_EPISODE_MS 5000, TCP_IP_SLOTS 8,
+    TCP_PORT_SLOTS 16, TCP_IP_MIN 5, TCP_PORT_MIN 5.
+  - struct TcpEpisode (208 B, static-asserted; single-byte scalars at
+    42..47, dst_ips at 48, dst_ports at 176): start_ms (fixed anchor),
+    last_seen_ms, src_ip[16] (episode key), meta_src_mac/dst_mac/bssid
+    (DS-aware triple of last qualifying frame), channel, in_use,
+    probe_mask (OR-accumulated kinds), nip, nport, overflow_flags,
+    dst_ips[8][16], dst_ports[16]. 3 x 208 = 624 B static.
+  - Probe kinds: TCP_PROBE_SYN 0 (flags==0x02, covers -sS/-sT),
+    TCP_PROBE_MAIMON 4 (flags==0x11 = FIN|ACK, -sM), TCP_PROBE_FIN 1
+    (0x01), TCP_PROBE_NULL 2 (0x00), TCP_PROBE_XMAS 3 (0x29 = FIN|PSH|URG).
+    Predicate: protocol 6, body_len == 0, EXACT flag equality (ACK/RST/
+    SYN-ACK excluded by construction). 0xFF = not a probe.
+  - Feed (tcp_episode_feed): match by src_ip; else claim a free slot
+    (memset, in_use, start_ms); if all 3 active, DROP the new source
+    (no early flush of qualified episodes). Updates last_seen, channel,
+    meta MACs (WDS passes nullptr bssid), probe_mask, and destination
+    tables: IP insert (full table -> TCP_OVERFLOW_IP bit, "8+" count is
+    honest), port insert (full -> TCP_OVERFLOW_PORT). No per-entry
+    timestamps; whole-episode accumulation.
+  - Expiry: tcp_sweep_episodes(now_ms) called at the RADIO_PCAP entry
+    point of sniffer_callback on EVERY captured frame (before
+    is_protected and all downstream gates) — no timer, no 1 Hz hook,
+    Core-0-local. At >= TCP_EPISODE_MS: qualify from FINAL totals
+    (nport >= 5 || nip >= 5) -> tcp_episode_report; memset the slot.
+    A continuously scanning source reports once per 10 s episode —
+    [note: TCP_EPISODE_MS is 5000, so "10 s" comments reflect the
+    pre-70022ff constant; the committed value is 5 s; window token in
+    alert text derives from TCP_EPISODE_MS].
+  - Report (tcp_episode_report): sorts stored ports AND dst IPs ascending
+    (race-artifact rationale: identical scans must serialize identically
+    for exact-text dedup); builds
+    "TCP SCAN Types: %s Ports: %s dst: %s %lus" (types in canonical order
+    SYN,FIN,NULL,XMAS,MAIMON — MAIMON only listed when nport >= 5; lists
+    comma-separated, no spaces; trailing '+' only on genuine table
+    overflow bits). Emits PacketCapture leak: timestamp=now;
+    frame_length = nip (carries dst-IP count for the recon renderer);
+    channel; ip_version 4/6; is_high_value = true (+300 retention);
+    alert_kind = ALERT_RECON_TCP; meta MACs/src_ip from the episode;
+    text; enqueued via leakQueue ISR bypass with leak_isr_attempts /
+    pcap_cooldown_total / leak_isr_dropped / pcap_upstream_total
+    counters (identical shape to the old feed-time emission).
+
+capture.cpp processLiveDumpQueue additions:
+  - TCP FIN (0x01), TCP NULL (0x00), TCP XMAS (0x29) custom_extracted
+    texts alongside the existing TCP RST path (protocol 6, raw_len 0).
+
+capture.cpp ARP-request suppression + recon rendering:
+  - In the Core-1 live-dump path, individual "ARP Req: " captures from a
+    scanner with an existing ALERT_RECON_ARP row in leakHistory (same
+    src_mac) are suppressed (not sent to leakQueue). Order-independent;
+    the alert-side cleanup pre-pass (below) stays as backstop.
+  - processLeakQueue: when an ALERT_RECON_ARP arrives, free every retained
+    individual ARP-REQUEST capture from the same src_mac
+    (prefix "ARP Req: ", alert_kind != ALERT_RECON_ARP, same src_mac).
+    Replies, other scanners, recon rows untouched.
+  - processLeakQueue duplicate branch: a repeated IDENTICAL recon alert
+    (TCP or ARP) still notifies (logLeakToSerial + 10 s footer banner
+    latch: alert_latch_until_ms = millis() + 10000, alert_latch_kind =
+    alert_kind) although the persistent row is deduplicated (hitCount++
+    already recorded the recurrence). Vendor/SSID resolution mirrors the
+    non-duplicate block.
+  - Admission: recon_tcp_bypass — ALERT_RECON_TCP records bypass BOTH the
+    near-duplicate gate (dm.sim256 >= DIV_NEAR_DUP_SIM256) and the final
+    score gate (incoming_score > min_score), because recon texts are
+    trigram-near-twins of sibling recon rows by construction; the victim
+    (global weakest slot) selection is unchanged. retained_redundancy_score
+    returns 0 for ALERT_RECON_TCP/ARP (recon rows exempt from the
+    redundancy penalty; placed after the stack probes so the DIAG
+    watermark still samples the equally-deep frame).
+  - logLeakToSerial: dedicated renderings for ALERT_RECON_TCP
+    ("🚨 CLRTXT [RECON-TCP]: MAC(vendor) srcIP / BSSID:...(ssid)|C%u /
+    TCP SCAN: N ports, M dst IPs over 5s / Types:... Ports:... Dst IPs:...")
+    and ALERT_RECON_ARP ("🚨 CLRTXT [RECON-ARP]: ... / counts segment
+    before '|' / Targets: segment verbatim"), both parsed from the shared
+    leak.text with the SAME segment bounds/trim as lists.cpp (single
+    construction path); the generic leak rendering lost its age
+    computation ("age:%s" removed from the third line).
+
+lists.cpp persistent-list recon rendering:
+  - ALERT_RECON_TCP: line1 "[xN]MAC(vendor) srcIP"; line2
+    "BSSID:...(ssid)|C%u"; line3 "TCP SCAN: N ports, M dst IPs over 5s|
+    firstSeen|lastSeen"; green payload = "Types:... Ports:... Dst IPs:..."
+    parsed from leak.text ("Types:"/"Ports:"/"dst:" separators; ips end at
+    the last space — the separator before the trailing window token, whose
+    width follows TCP_EPISODE_MS and must not be assumed; trailing '+'
+    handled by checking the last char; port count = commas + 1, minus 1
+    and '+' when saturated).
+  - ALERT_RECON_ARP: structurally identical; line3 = counts segment
+    (before '|') + firstSeen|lastSeen; green payload = "Targets:" segment
+    verbatim; malformed text rendered verbatim with ages (defensive).
+  - Recon entries slice the reformatted greenBody instead of raw
+    leak.text for the payload lines (copyLen = strnlen(greenBody), pLen
+    aligned so the NUL tail is not sanitized into dots).
+
+9. IMPLEMENTATION HISTORY / CORRECTIONS (fixes that must be preserved)
+----------------------------------------------------------------------
+1. UNSIGNED BYTE-VARIANCE SUBTRACTION CORRECTION [UNCOMMITTED ct.cpp]:
+   The byte-variance EWMA update was
+     var += (resid^2 >> 5) - (var >> 5)   (unsigned)
+   which UNDERFLOWED u64 whenever the variance was decaying (new squared
+   residual below the running variance), corrupting the statistic. Fixed
+   as a signed delta:
+     int64_t r2 = resid*resid;
+     int64_t delta = (r2 >> 5) - (int64_t)(var >> 5);
+     var = (uint64_t)((int64_t)var + delta);
+   delta is bounded below by -(var >> 5), so the sum cannot go negative.
+   Precision note: a FUSED unsigned `var += (r2>>5) - (var>>5)` is
+   modular and self-correcting whenever the true result is non-negative,
+   so the observed corruption implies the earlier form computed the delta
+   in a separate step or narrower width; the signed form is
+   unconditionally safe regardless of grouping. The population u32 path
+   uses the same shape with small magnitudes.
+2. UNCONDITIONAL BYTE SNAPSHOT/RESET SEMANTICS [UNCOMMITTED ct.cpp]:
+   The per-window byte snapshot (wbytes = ct_window_bytes;
+   ct_window_bytes = 0) is taken for EVERY window under the fence,
+   mirroring the mask snapshots; the EWMA fold runs only for valid
+   windows, so an invalid window's few bytes vanish (same
+   discard-invalid convention as obs/rej/channels). Do not move the
+   snapshot inside the valid branch.
+3. PROMOTION DIAGNOSTIC USE-AFTER-REMOVE CORRECTION [UNCOMMITTED ct.cpp]:
+   ct_persist_observe captured the promo env id BEFORE ct_pend_remove()
+   (which swap-with-last-overwrites the removed entry) so the
+   [CT-PERSIST] promo print reports the true first_env_id. Order matters:
+   promo_first_env = p.first_env_id; ct_pend_remove(pi); then print.
+4. Probe-slot semantics: processProbeRequestShared's return value is a
+   transient handle; identities are re-read from probeList under the
+   commit fence and immediately copied — the slot index is never stored
+   persistently (see §7).
+5. Validity redefinition (Step 5 revision of the 4.2 rule): valid =
+   unpaused (NOT obs > 0); zero-observation windows are real readings;
+   ct_obs_count is a diagnostic descriptor only and cannot distinguish
+   "empty RF" from "nothing qualifying on air".
+6. window_count counts VALID windows only (deliberate semantics
+   revision); n_pre derives from acc.window_count - 1 (the former
+   ct_n_obs counter was removed).
+7. CT mode re-entry clears ALL Core-0/Core-1 scratch without the fence
+   (safe because the feeder call site is RADIO_CT-gated) so stale
+   pre-exit state cannot leak into the first post-re-entry window.
+8. Diagnostics are snapshot-driven (taken before the possible commit) so
+   a same-window commit cannot print post-reset values.
+
+10. DIAGNOSTICS (all TEMPORARY, Core 1 only, post-fence, snapshot-driven)
+-------------------------------------------------------------------------
+  [CT-STEP3]  "window=%u bssid=%u ssid=%u trunc=%s%s"  (acc fill + trunc
+              flags; B/S letters for CT_FLAG_BSSID_TRUNC/SSID_TRUNC)
+  [CT-STEP4.1] "win=%u B=%u d=%s dd=%s | S=%u d=%s dd=%s"  (signed deltas,
+              "n/a" until windows 2/3)
+  [CT-STEP4.2] valid: "win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s
+              range=%s/%s thr=%s bytes=%u.%02uKiB"  (mu/mean printed as
+              "%u.%02u" from Q8.8, thr = C1 + 1.25*sigma_max)
+              invalid: "win=%u valid=N obs=0 rej=%u cov=%u/13 mean=n/a
+              range=n/a/n/a"  (window number = acc.window_count + 1)
+  [CT-STEP5]  "win=%u class=%c ewma=%u/%u/%u persist=%u/%u/%u"
+              (class T/E; ewma raw >> 2; persist P/C/R = pop/churn/turn)
+  [CT-TRIG]   one line per channel crossing N_MIN on THIS window
+              (transition-only): "win=%u channel=POP ewma=%u.%02u
+              persist=%u" (also CHURN, TURN)
+  [CT-SEED]   one-shot per segment (incl. after commit): "win=%u
+              mu=%u/%u"  (re-seed proof)
+  [CT-PERSIST] promotion/eviction: "win=%u promo mac=%02X%02X%02X%02X
+              %02X%02X envs=E%u,E%u" / "win=%u evict-row idx=%u"
+  Removed with the retention machinery: [CT-STEP4] (overlap vs committed).
+  [DIAG]/[PROF] serial cadence in main.cpp was trimmed (several lines
+  commented out) during this work.
+
+11. MEMORY IMPACT (measured from the current build artifacts)
+-------------------------------------------------------------
+  - SessionBuffer union: 14,800 B (map: .bss.sessionBuf size 0x39d0 at
+    0x3ffc5ad0) — UNCHANGED from 535faed; CTState is a union member.
+  - CTState: 8,768 B [UNCOMMITTED layout: CtEnvRecord hist[10] = 320 B,
+    acc 1,360 B, scalars, persist table (1 + 20 x 200) = 4,004 B,
+    pend pool (1 + 192 x 16) = 3,073 B + alignment] -> union headroom
+    6,032 B. Committed 402dd1b layout was 12,248 B (hist of 8 full
+    CtEnvironments), headroom 2,552 B.
+  - static SRAM delta of the whole delta: 0 for CT (union placement);
+    ARP scanner slots 448 -> 464 B (+16); TCP detector 624 B (episodes,
+    replacing the larger old tuple design).
+  - Static asserts: CTState <= union boundary; CtEnvRecord == 32;
+    CtPersistDevice == 200; CtPendMac == 16; TcpEpisode == 208.
+  - Map: _bss_end = 0x3ffdbf38 (inside dram0_0_seg, linker ASSERT
+    passing); _data_end = 0x3ffc40b4; firmware.bin 1,310,992 B; ELF entry
+    0x40082d0c.
+  - SIZE FLAG (measured, not from source): app0 is 0x140000 = 1,310,720 B
+    at 0x10000 (ends 0x150000); firmware.bin is 1,310,992 B — 272 bytes
+    LARGER than the slot, and the last segment ends at file offset
+    0x1400E4 with the appended hash after it (~0x140104 image length), so
+    the image would extend ~0x104-0x110 bytes past 0x150000 into app1.
+    The user-reported "fits the app slot" does not match the bytes; this
+    must be re-verified on the host (esptool image_info / read_flash)
+    before any conclusion about the bootloop is drawn.
+  - ct.cpp file-local scratch (all reset appropriately): touch masks 12 B,
+    derivative scratch ~10 B, horizon EWMA/var scratch ~30 B, envelope
+    4 B, obs/rej/chans/last_ch ~9 B, byte EWMAs 12 B, window timing 8 B.
+
+12. FROZEN DESIGN CONSTRAINTS (must be preserved in reimplementation)
+---------------------------------------------------------------------
+  - Bounded SRAM: no expansion of unrelated tables; CT lives inside the
+    existing SessionBuffer union (static SRAM delta 0 for CTState).
+  - vendor[28] in CtPersistDevice unless actual SRAM pressure requires
+    reducing it.
+  - Exact MAC identity everywhere in persistence (6-byte memcmp; OUI is
+    descriptive only).
+  - Pending-pool eviction rule: evict the entry with the SMALLEST
+    first_env_id (ties -> lowest index); swap-with-last removal;
+    false-negative-only by construction.
+  - First-seen preservation: first_seen stamps are min-aggregated across
+    evidence sources (promote/refresh); ssid_hist slot 0 is frozen.
+  - First eight environment ids plus overflow semantics: env_seen[8]
+    insert-once; CT_PFLAG_ENV_OVF; env_count saturating u8.
+  - Live accumulator arrays remain authoritative; commit copies metrics
+    (CtEnvRecord snapshot), not references.
+  - No persistent references into transient probe/SSID/BSSID storage.
+  - Frozen CT horizon/turnover/quorum/seed-window behavior: CT_BASE_SHIFT
+    = 5 (alpha 1/32), evidence EWMA 1/8, persistence N_MIN 3, 2-of-3
+    quorum {POP, CHURN, TURN}, exact-seed on first valid window,
+    evidence measured against pre-update baselines, cold start uniform
+    (evidence from window 3), CT_WIFI_WINDOW_MS 5000, validity = unpaused,
+    turnover = adjacent-window mask popcounts + flux-weighted rej.
+  - Known deliberate open items (do not "fix" silently):
+      (a) one-sided churn/turnover excess (flux-drop blindness);
+      (b) 2-of-3 quorum coincidence (single channel sustains per event);
+      (c) saturation blindness at trunc=B (rej covers untracked world);
+      (d) zero-observation commit edge (first_seen=0 sentinel).
+  - Known notes hazards: first_seen==0 sentinel also gates "committed
+    exists" tests; comments mentioning "10 s episode" predate the 5 s
+    TCP_EPISODE_MS.
+
+13. REIMPLEMENTATION MAP (file-by-file checklist against 535faed)
+-----------------------------------------------------------------
+  src/core/wavehound_state.h:
+    [ ] CT constants (48/32/8->10, 20/192/4) + flag defines
+    [ ] CtEnvironment (1,360 B) — present at 535faed? NO: add
+    [ ] CtEnvRecord + static_assert(32)
+    [ ] CtPersistDevice/CtPersistTable + static_assert(200)
+    [ ] CtPendMac/CtPendPool + static_assert(16)
+    [ ] CTState (hist metrics ring + acc + persist + pend) with
+        static_assert(union_size >= sizeof(CTState)); union member
+        `CTState ctState;`
+  src/core/wavehound_state.cpp:
+    [ ] CTState (&ctState) = sessionBuf.ctState; reference alias
+  src/core/radio.h:   [ ] CT_WIFI_WINDOW_MS 5000
+  src/core/radio.cpp: [ ] RADIO_CT in antenna-init branch + hopper
+  src/modes/ct.h:     [ ] new — processCtData, ct_observe_bssid,
+                      ct_window_bytes, ct_probe_hit_mask declarations
+                      (note: file currently ends without trailing newline)
+  src/modes/ct.cpp:   [ ] new, 956 lines — feeder, masks, window close,
+                      three channels, commit, persistence, diagnostics,
+                      isqrt32/isqrt64, all constants (§4-§6, §10)
+  src/capture.cpp (CT parts):
+    [ ] #include "modes/ct.h"
+    [ ] ct_window_bytes += len (RADIO_CT gate, top of callback)
+    [ ] ct_observe_bssid call in passive SSID scraper
+    [ ] probe_slot capture + ct_probe_hit_mask marking (RADIO_CT gate)
+  src/osint/osint.cpp/.h:
+    [ ] processProbeRequestShared returns int target_slot (+ header
+        comment; no other change)
+  src/main.cpp:
+    [ ] #include "modes/ct.h"; processCtData() every tick before render
+        gate; (optional) diagnostic-line trimming; drawChartFooter()
+        on alert-cooldown refresh
+  src/ui/input.cpp:   [ ] PCAP->CT mode cycle; "MODE: CT" tile; promisc
+                      condition includes RADIO_CT
+  src/ui/views/chart.cpp: [ ] CT banner/footer; PCAP footer changes
+                      (|=2m removed, banner texts, "NO ALERTS")
+  src/ui/views/lists.cpp: [ ] recon_tcp/recon_arp rendering branches +
+                      greenBody slicing
+  src/capture.cpp (non-CT, committed between 535faed and HEAD — needed
+  if reverting all the way to 535faed):
+    [ ] ARP detector retune (ARP_REQ_MIN 10, TGT_MIN 6, REARM 10 s,
+        ARP_REQ_RING 9, req_count latch, sorted target list, new alert
+        text, meta src_ip/ip_version)
+    [ ] TCP episode detector (§8: struct, feed, sweep, report, probe
+        predicate incl. MAIMON)
+    [ ] TCP FIN/NULL/XMAS live-dump texts
+    [ ] ARP-request suppression + recon cleanup + duplicate-alert notify
+        + recon admission bypass + redundancy-score exemption
+    [ ] logLeakToSerial recon renderings + age removal
+  Documentation:
+    [ ] Chase Tail Notes.md; references/ct-segmentation.md (design/
+        decision logs; replicate from this record or git history)
+
+Verification anchor points after reimplementation:
+  - sizeof(CtEnvRecord)==32, CtPersistDevice==200, CtPendMac==16,
+    TcpEpisode==208, union asserts all pass at compile time.
+  - Firmware map: .bss.sessionBuf == 0x39d0; CTState inside union.
+  - [CT-SEED] prints once per segment; [CT-TRIG] on crossings; quorum
+    commits advance env_seq and re-seed (second [CT-SEED]).
+=====================================================================
+END OF RECORD
+=====================================================================

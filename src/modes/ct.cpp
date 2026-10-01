@@ -1,5 +1,20 @@
 #include "ct.h"
 #include "core/radio.h"
+#include "modes/ap_scanner.h"
+#include "osint/osint.h"
+
+// Compile-time switches for the TEMPORARY CT serial diagnostics only.
+// Each 0 = compiled out (image-size budget); 1 = restores the byte-
+// identical diagnostic output. CT behavior, state, timing, and SRAM
+// layout are identical in both settings — the gated code is Core-1,
+// post-fence, serial-only. Image budget note (2026-10-01): the app0
+// partition is 0x140000 = 1,310,720 B; with all four at 0 the image is
+// 1,309,056 B (1,664 B headroom); the full set was 1,310,992 B (272 B
+// overflow). Current enablement: SEED + TRIG + PERSIST.
+#define CT_DIAG_SEED     1   // [CT-SEED] seed + re-seed-after-commit proof
+#define CT_DIAG_TRIG     1   // [CT-TRIG] channel crossings (POP/CHURN/TURN)
+#define CT_DIAG_PERSIST  1   // [CT-PERSIST] promotions/evictions
+#define CT_DIAG_STEPS    0   // [CT-STEP3/4.1/4.2/5] window telemetry
 
 // ---- Step 3 observation accumulator (Core-0 feeder) ----
 //
@@ -64,56 +79,68 @@ static uint16_t ct_rej_count = 0;
 static uint16_t ct_chans_mask = 0;
 static uint8_t ct_last_ch = 0xFF; // 0xFF = no channel recorded yet
 
-// ---- Step 5: segmentation evidence (3 LIVE channels + 1 diagnostic) ----
-// LIVE quorum: POPULATION + CHURN + TURNOVER (2-of-3). RETENTION is
-// computed as a diagnostic only (see below).
+// ---- Step 5: segmentation evidence (3 LIVE channels) ----
+// LIVE quorum: POPULATION + CHURN + TURNOVER (2-of-3). The old RETENTION
+// channel was retired from the quorum and its machinery (sums, EWMA,
+// persistence, and the hist[]-identity-overlap diagnostic) has been deleted
+// along with the historical identity arrays it consumed.
 // All file-local Core-1 scratch; updated only for VALID windows (window that
 // closes while pause_sniffing == false), inside the F10 fence.
 //
-// Churn channel: running means of ABSOLUTE deltas (m_B = mean|ΔB|). Evidence
+// Churn channel: EWMA of ABSOLUTE deltas (m_B = EWMA|ΔB|). Evidence
 // is EXCESS churn over the segment's own normal churn magnitude, so a
 // sustained walking regime self-quietens once m adapts.
 // Horizon baseline for churn: EWMA of |dB|, |dS| (Q8.8), seeded with the
 // first delta (window 2), evidence from window 3 — same clock as mu/var.
 static uint16_t ct_ewma_m_ab_b_q8 = 0, ct_ewma_m_ab_s_q8 = 0;
 //
-// Retention channel: R = shared/prev_count in Q8.8, from the touch masks
-// (ct_prev_smask = previous valid window's SSID mask — the bit->SSID mapping
-// is stable for the lifetime of acc, so mask intersection IS identity
-// intersection; no strings are stored or compared here). Divergence is
-// DIRECTIONAL: only low retention (μ_R − R) is transition evidence.
-static uint32_t ct_prev_smask = 0;
-static uint32_t ct_sum_r = 0, ct_sum_r2 = 0; // Q8.8, Q8.16 respectively
-static uint16_t ct_n_ret = 0;                // non-ABSTAIN retention observations
-// DIAGNOSTIC-ONLY since the turnover step: retention is excluded from the
-// quorum; its evidence machinery is kept temporarily for on-device
-// comparison and will be deleted after turnover is hardware-verified.
-//
 // Turnover channel (identity dynamics, adjacent-window) — LIVE channel:
 //   turnover = popcount(cur & ~prev)   new SSIDs      (tracked stream)
 //            + popcount(prev & ~cur)   vanished SSIDs (tracked stream)
 //            + rejected inserts        untracked-stream arrivals
+// ct_prev_smask = previous valid window's SSID mask — the bit->SSID mapping
+// is stable for the lifetime of acc, so mask algebra IS identity algebra.
 // No ABSTAIN case: a previous valid window suffices (empty->populated IS
 // turnover). Adjacent-window semantics mean a post-commit re-learn of the
 // SAME environment produces ~no turnover (the prev mask tracks it), so
 // there is no artificial post-commit spike. The rejected term is
 // FLUX-WEIGHTED (frames x unseen identities; rejected identities are not
 // recorded, so each later frame re-attempts — rej <= 2*obs).
+static uint32_t ct_prev_smask = 0;
 static uint32_t ct_ewma_m_turn_q8 = 0; // EWMA of turnover (Q8.8, u32: turnover
                                        // can exceed 255 counts via rej)
 //
 // Common EWMA (Q8.8) + persistence per channel. A channel "is triggering"
 // when persistence >= CT_N_MIN — the persistence state IS the trigger state
 // (no separate latch). LIVE quorum = 2-of-3 over {population, churn,
-// turnover}; retention's persistence state is diagnostic only.
-static uint16_t ct_ewma_pop = 0, ct_ewma_churn = 0, ct_ewma_ret = 0;
-static uint16_t ct_ewma_turn = 0;
-static uint8_t ct_persist_pop = 0, ct_persist_churn = 0, ct_persist_ret = 0;
-static uint8_t ct_persist_turn = 0;
+// turnover}.
+static uint16_t ct_ewma_pop = 0, ct_ewma_churn = 0, ct_ewma_turn = 0;
+static uint8_t ct_persist_pop = 0, ct_persist_churn = 0, ct_persist_turn = 0;
 //
 // Provisional E/T classification of the OPEN segment (false=E_n, true=T_n).
 // Description of volatility only: changes never reset statistics or evidence.
 static bool ct_prov_is_t = false;
+//
+// ---- Per-window byte traffic (environment-history metric) ----
+// Core 0 sums every received frame's sig_len into ct_window_bytes while
+// RADIO_CT is active (same interpretation as the ApRecord traffic
+// accounting). Core 1 snapshots + clears it under the window-close fence and
+// folds it into horizon EWMAs: mean in KiB Q8.8 (bytes >> 2) and variance in
+// KiB Q8.16 (u64 — raw-byte residuals overflow u32). Same alpha = 1/32,
+// seeded exactly on the segment's first valid window, excursion-gated like
+// the population variance so transitions are never laundered into the
+// byte-dispersion statistic.
+uint32_t ct_window_bytes = 0;                    // Core-0 written (see ct.h)
+static uint32_t ct_ewma_byte_mean_q8kib = 0;     // KiB Q8.8
+static uint64_t ct_ewma_byte_var_q16kib = 0;     // KiB^2 Q8.16
+//
+// ---- Probe presence (persistent-device evidence) ----
+// Core 0 marks the probe-tracker slot that recorded each accepted probe
+// request during the current window (see capture.cpp decision gate). Core 1
+// snapshots + clears it at commit; identities are re-read from probeList
+// under the fence and immediately copied into CT-owned state — the slot
+// index never becomes a persistent reference.
+uint64_t ct_probe_hit_mask = 0;                  // Core-0 written (see ct.h)
 
 // Fixed-point constants (Q8.8 unless noted). Initial tunables from the
 // audited design — measurable from [CT-STEP*] traces, not sacred.
@@ -123,13 +150,13 @@ static const uint16_t CT_SIGMA_T_Q8 = 384;        // provisional-T sigma >= 1.5 
 static const uint8_t CT_BASE_SHIFT = 5;           // baseline EWMA alpha = 1/32
 static const uint16_t CT_VAR_FLOOR_Q8 = 256;      // variance gate floor: 1.0 count
 static const uint16_t CT_K3 = 3;                  // churn normalization K3
-static const uint16_t CT_K4 = 3;                  // retention K4 (diagnostic channel)
 static const uint16_t CT_K5 = 3;                  // turnover normalization K5 (trace-tunable)
 static const uint16_t CT_TURN_N_MAX_Q8 = 8192;    // turnover evidence clamp (32.0 Q8.8)
-static const uint16_t CT_SIGMA_R_FLOOR_Q8 = 26;   // sigma_floor = 0.1 (25.6 -> 26)
 static const uint8_t CT_N_MIN = 3;                // persistence length (windows)
 
-// Integer square root (no floating-point state).
+// Integer square roots (no floating-point state). The 64-bit variant serves
+// the byte-variance EWMA (KiB^2 Q8.16); raw-byte residuals would overflow
+// 32-bit squares.
 static uint16_t ct_isqrt32(uint32_t v) {
   uint32_t res = 0, bit = 1UL << 30;
   while (bit > v) bit >>= 2;
@@ -139,6 +166,16 @@ static uint16_t ct_isqrt32(uint32_t v) {
     bit >>= 2;
   }
   return (uint16_t)res;
+}
+static uint32_t ct_isqrt64(uint64_t v) {
+  uint64_t res = 0, bit = 1ULL << 62;
+  while (bit > v) bit >>= 2;
+  while (bit) {
+    if (v >= res + bit) { v -= res + bit; res = (res >> 1) + bit; }
+    else res >>= 1;
+    bit >>= 2;
+  }
+  return (uint32_t)res;
 }
 
 // Common evidence update: EWMA (alpha = 1/8, Q8.8) + consecutive-above-
@@ -163,13 +200,14 @@ static inline bool ct_evidence_update(uint16_t &ewma, uint8_t &persist,
 static void ct_reset_segment_stats() {
   ct_ewma_mu_b_q8 = 0; ct_ewma_mu_s_q8 = 0;
   ct_ewma_var_b_q16 = 0; ct_ewma_var_s_q16 = 0;
+  ct_ewma_byte_mean_q8kib = 0; ct_ewma_byte_var_q16kib = 0;
   ct_min_b = 0; ct_max_b = 0; ct_min_s = 0; ct_max_s = 0;
   ct_have_obs = false;
   ct_ewma_m_ab_b_q8 = 0; ct_ewma_m_ab_s_q8 = 0;
-  ct_prev_smask = 0; ct_sum_r = 0; ct_sum_r2 = 0; ct_n_ret = 0;
+  ct_prev_smask = 0;
   ct_ewma_m_turn_q8 = 0;
-  ct_ewma_pop = 0; ct_ewma_churn = 0; ct_ewma_ret = 0; ct_ewma_turn = 0;
-  ct_persist_pop = 0; ct_persist_churn = 0; ct_persist_ret = 0;
+  ct_ewma_pop = 0; ct_ewma_churn = 0; ct_ewma_turn = 0;
+  ct_persist_pop = 0; ct_persist_churn = 0;
   ct_persist_turn = 0;
   ct_prov_is_t = false;
   // Derivatives must not bridge a segment boundary either.
@@ -258,13 +296,273 @@ static bool ct_window_running = false;
 // with its final provisional E/T class, advance the global segment index,
 // and reset the accumulator plus ALL per-segment statistical/evidence state.
 // Must run inside the F10 fence.
+// ===========================================================================
+// ---- Persistent-device machinery (Core 1, commit time, fence held) ----
+// All inputs are read ONCE under the pause fence and immediately copied into
+// CT-owned state. No persistent record ever references a probeList slot,
+// ssidPool node, or bssidCache entry. Evidence sources at commit:
+//   AP:   the committed acc BSSID set (exact identities, dedup'd live)
+//   probe: ct_probe_hit_mask bits -> probeList[slot] re-read under the fence
+// A MAC observed in a second distinct committed environment promotes
+// immediately from the pending pool into the persistent table.
+// ===========================================================================
+
+// Minimal sanity: skip identities that cannot be a device (multicast I/G bit,
+// all-zero, broadcast). The probe path's own randomization gate upstream
+// already filters most junk; this is the persistence-layer guard.
+static bool ct_persist_mac_sane(const uint8_t *mac) {
+  static const uint8_t bcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+  if ((mac[0] & 0x01) != 0) return false;          // multicast/group bit
+  for (uint8_t i = 0; i < 6; i++)
+    if (mac[i] != 0) return (memcmp(mac, bcast, 6) != 0);
+  return false;                                    // all-zero
+}
+
+static CtPersistDevice *ct_persist_find(const uint8_t *mac) {
+  for (uint8_t i = 0; i < ctState.persist.count; i++)
+    if (memcmp(ctState.persist.dev[i].mac, mac, 6) == 0)
+      return &ctState.persist.dev[i];
+  return nullptr;
+}
+
+static int ct_pend_find(const uint8_t *mac) {
+  for (uint8_t i = 0; i < ctState.pend.count; i++)
+    if (memcmp(ctState.pend.e[i].mac, mac, 6) == 0)
+      return (int)i;
+  return -1;
+}
+
+// env_seen[] insert-once semantics. env_count counts ALL distinct envs
+// (saturating u8); exact dedup is only possible against the stored first 8 —
+// once the list is full, revisits of unstored env ids increment the count
+// again (documented bounded limitation; ENV_OVERFLOW marks it).
+static void ct_persist_env_insert(CtPersistDevice &d, uint16_t env) {
+  uint8_t stored = (d.env_count < 8) ? d.env_count : 8;
+  for (uint8_t i = 0; i < stored; i++)
+    if (d.env_seen[i] == env) return;              // already counted
+  if (stored < 8)
+    d.env_seen[stored] = env;
+  else
+    d.flags |= CT_PFLAG_ENV_OVF;
+  if (d.env_count < 255) d.env_count++;
+}
+
+// ssid_hist policy: slot 0 = first SSID ever (frozen once written); slots
+// 1..3 = latest distinct SSIDs in recency order (dedup against all 4 slots,
+// oldest rolled out by memmove). Empty slots ('\0') render as none.
+static void ct_persist_ssid_note(CtPersistDevice &d, const char *ssid) {
+  if (ssid == nullptr || ssid[0] == '\0') return;
+  for (uint8_t i = 0; i < CT_PERSIST_SSIDS; i++)
+    if (d.ssid_hist[i][0] != '\0' && strcmp(d.ssid_hist[i], ssid) == 0)
+      return;                                      // duplicate
+  if (d.ssid_hist[0][0] == '\0') {
+    strncpy(d.ssid_hist[0], ssid, 32);
+    d.ssid_hist[0][32] = '\0';
+    return;                                        // first ever — frozen slot
+  }
+  memmove(d.ssid_hist[1], d.ssid_hist[2], 33);
+  memmove(d.ssid_hist[2], d.ssid_hist[3], 33);
+  strncpy(d.ssid_hist[3], ssid, 32);
+  d.ssid_hist[3][32] = '\0';
+}
+
+// Walk a probe tracker SSID chain (arrival-ordered; the tail is the most
+// recent SSID) and feed it to the record's SSID policy. Fence-held read.
+static void ct_persist_ssid_from_chain(CtPersistDevice &d, int probe_slot) {
+  if (probe_slot < 0) return;
+  int node = probeList[probe_slot].first_ssid_idx;
+  int guard = 0;
+  while (node != -1 && guard++ < TOTAL_SSID_POOL) {
+    if (ssidPool[node].text[0] != '\0')
+      ct_persist_ssid_note(d, ssidPool[node].text);
+    node = ssidPool[node].next_node_idx;
+  }
+}
+
+// Opportunistic AP enrichment (optional by design, never evidence): the
+// bssidCache copy becomes the record's first-known SSID only while the
+// record has none at all. Fence-held read of the 16-entry cache.
+static void ct_persist_ap_enrich(CtPersistDevice &d, const uint8_t *bssid) {
+  if (d.ssid_hist[0][0] != '\0') return;
+  for (int i = 0; i < MAX_BSSID_CACHE; i++) {
+    if (bssidCache[i].last_seen == 0) continue;
+    if (memcmp(bssidCache[i].bssid, bssid, 6) == 0) {
+      if (bssidCache[i].ssid[0] != '\0')
+        ct_persist_ssid_note(d, bssidCache[i].ssid);
+      return;
+    }
+  }
+}
+
+// Country copy (AP evidence only): scan liveApData for the BSSID and copy
+// its 802.11d country IE bytes. Cache eviction leaves the field empty.
+static void ct_persist_copy_country(CtPersistDevice &d, const uint8_t *bssid) {
+  if (d.country[0] != '\0') return;                // already known
+  for (int i = 0; i < MAX_AP_RECORDS; i++) {
+    if (memcmp((const void *)liveApData[i].bssid, bssid, 6) != 0) continue;
+    if (liveApData[i].country[0] != '\0') {
+      d.country[0] = liveApData[i].country[0];
+      d.country[1] = liveApData[i].country[1];
+      d.country[2] = liveApData[i].country[2];
+    }
+    return;
+  }
+}
+
+// Vendor copy (probe evidence only): probeList vendors are resolved by the
+// existing mechanism (Tag 221 at frame time, or the Core-1 SD worker).
+// Placeholders ("Resolving...") are NOT copied — an unresolved device keeps
+// an empty vendor and its OUI for later resolution. AP rows have no vendor
+// source in CT-reachable state; they carry OUI only.
+static void ct_persist_copy_vendor(CtPersistDevice &d, int probe_slot) {
+  if (probe_slot < 0 || d.vendor[0] != '\0') return;
+  const char *v = probeList[probe_slot].vendor;
+  if (v[0] == '\0' || strcmp(v, "Resolving...") == 0) return;
+  strncpy(d.vendor, v, sizeof(d.vendor) - 1);
+  d.vendor[sizeof(d.vendor) - 1] = '\0';
+}
+
+static void ct_pend_remove(int idx) {
+  ctState.pend.e[idx] = ctState.pend.e[ctState.pend.count - 1];
+  ctState.pend.count--;
+}
+
+// One evidence event for one exact MAC in committed environment `env`.
+static void ct_persist_observe(const uint8_t *mac, bool is_ap, int probe_slot,
+                               uint32_t src_first, uint32_t src_last,
+                               uint16_t env, uint16_t win) {
+  if (!ct_persist_mac_sane(mac)) return;
+  uint8_t fl = is_ap ? CT_PFLAG_AP : CT_PFLAG_PROBE;
+
+  // --- already persistent: refresh owned state ---
+  CtPersistDevice *row = ct_persist_find(mac);
+  if (row != nullptr) {
+    ct_persist_env_insert(*row, env);
+    if (src_first < row->first_seen) row->first_seen = src_first; // earliest known
+    if (src_last > row->last_seen) row->last_seen = src_last;
+    row->flags |= fl;
+    if (!is_ap) ct_persist_ssid_from_chain(*row, probe_slot);
+    else        ct_persist_ap_enrich(*row, mac);
+    ct_persist_copy_vendor(*row, probe_slot);
+    if (is_ap) ct_persist_copy_country(*row, mac);
+    return;
+  }
+
+  // --- pending: promote on a second distinct environment ---
+  int pi = ct_pend_find(mac);
+  if (pi >= 0) {
+    CtPendMac &p = ctState.pend.e[pi];
+    if (p.first_env_id == env) {                   // same env, merged type
+      p.flags |= fl;
+      if (src_first < p.first_seen) p.first_seen = src_first;
+      return;
+    }
+    // PROMOTE: second distinct committed environment.
+    if (ctState.persist.count >= CT_PERSIST_DEVICES) {
+      // Table full: evict the least-recently-seen row (LRU by last_seen;
+      // ties -> lowest index). Deterministic, bounded, false-negative-only.
+      uint8_t vic = 0;
+      for (uint8_t i = 1; i < ctState.persist.count; i++)
+        if (ctState.persist.dev[i].last_seen < ctState.persist.dev[vic].last_seen)
+          vic = i;
+#if CT_DIAG_PERSIST
+      Serial.printf("[CT-PERSIST] win=%u evict-row idx=%u\n", (unsigned)win,
+                    (unsigned)vic);
+#endif
+      ctState.persist.dev[vic] = ctState.persist.dev[ctState.persist.count - 1];
+      ctState.persist.count--;
+    }
+    CtPersistDevice &d = ctState.persist.dev[ctState.persist.count++];
+    memset(&d, 0, sizeof(CtPersistDevice));
+    memcpy(d.mac, mac, 6);
+    memcpy(d.oui, mac, 3);
+    d.first_seen = (src_first < p.first_seen) ? src_first : p.first_seen;
+    d.last_seen = src_last;
+    d.env_seen[0] = p.first_env_id;
+    d.env_seen[1] = env;
+    d.env_count = 2;
+    d.flags = p.flags | fl;
+    if (!is_ap) {
+      ct_persist_ssid_from_chain(d, probe_slot);
+      ct_persist_copy_vendor(d, probe_slot);
+    } else {
+      ct_persist_ap_enrich(d, mac);
+      ct_persist_copy_country(d, mac);
+    }
+    uint16_t promo_first_env = p.first_env_id;
+    ct_pend_remove(pi);
+#if CT_DIAG_PERSIST
+    Serial.printf("[CT-PERSIST] win=%u promo mac=%02X%02X%02X%02X%02X%02X envs=E%u,E%u\n",
+                  (unsigned)win, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
+                  (unsigned)promo_first_env, (unsigned)env);
+#endif
+    return;
+  }
+
+  // --- first evidence ever: enter the pending pool ---
+  if (ctState.pend.count >= CT_PEND_SLOTS) {
+    // Pool full: evict the entry from the OLDEST environment (smallest
+    // first_env_id; ties -> lowest index). Deterministic; loses only a
+    // seen-once record (false-negative-only).
+    uint8_t vic = 0;
+    for (uint8_t i = 1; i < ctState.pend.count; i++)
+      if (ctState.pend.e[i].first_env_id < ctState.pend.e[vic].first_env_id)
+        vic = i;
+    ctState.pend.e[vic] = ctState.pend.e[ctState.pend.count - 1];
+    ctState.pend.count--;
+  }
+  CtPendMac &p = ctState.pend.e[ctState.pend.count++];
+  p.first_seen = src_first;
+  p.first_env_id = env;
+  memcpy(p.mac, mac, 6);
+  p.flags = fl;
+}
+
+// Master persistence pass at commit of environment `env`. Runs under the
+// pause fence: Core-0 writers (probe tracker, acc feeder) are quiesced, so
+// probeList reads are stable for the duration.
+static void ct_persist_commit(uint16_t env, uint16_t win) {
+  // AP evidence: the committed environment's exact BSSID set. Per-BSSID
+  // stamps do not exist in acc, so the environment-level stamps are the
+  // closest available observation times (documented semantics).
+  for (uint8_t i = 0; i < ctState.acc.n_bssid; i++)
+    ct_persist_observe(ctState.acc.bssid[i], true, -1,
+                       ctState.acc.first_seen, ctState.acc.last_seen, env, win);
+  // Probe evidence: snapshot + clear the hit mask, then resolve each bit's
+  // identity from the tracker under the fence.
+  uint64_t hits = ct_probe_hit_mask;
+  ct_probe_hit_mask = 0;
+  while (hits) {
+    int s = (int)__builtin_ctzll(hits);
+    hits &= hits - 1;
+    if (s >= MAX_PROBE_SLOTS) continue;
+    ct_persist_observe(probeList[s].mac, false, s,
+                       probeList[s].first_seen, probeList[s].last_seen,
+                       env, win);
+  }
+}
+
 static void ct_commit_segment() {
   uint8_t next = (ctState.current_idx + 1) % MAX_CT_ENVIRONMENTS;
-  CtEnvironment &dst = ctState.hist[next];
-  dst = ctState.acc; // identities, first/last_seen, window_count, n_*, trunc flags
+  CtEnvRecord &dst = ctState.hist[next];
+  // ---- Immutable environment metrics snapshot (the committing window is
+  // included: its absorption happened before the quorum check) ----
+  dst.first_seen = ctState.acc.first_seen;
+  dst.last_seen = ctState.acc.last_seen;           // duration = last - first
+  dst.byte_mean_q8kib = ct_ewma_byte_mean_q8kib;
+  dst.byte_std_q8kib = ct_isqrt64(ct_ewma_byte_var_q16kib);
+  dst.mu_b_q8 = ct_ewma_mu_b_q8;
+  dst.sig_b_q8 = ct_isqrt32(ct_ewma_var_b_q16);
+  dst.mu_s_q8 = ct_ewma_mu_s_q8;
+  dst.sig_s_q8 = ct_isqrt32(ct_ewma_var_s_q16);
   dst.env_id = ctState.env_seq;
-  dst.flags = (dst.flags & ~CT_FLAG_CLASS_T) | (ct_prov_is_t ? CT_FLAG_CLASS_T : 0);
+  dst.window_count = ctState.acc.window_count;
+  dst.flags = (ctState.acc.flags & (CT_FLAG_BSSID_TRUNC | CT_FLAG_SSID_TRUNC)) |
+              (ct_prov_is_t ? CT_FLAG_CLASS_T : 0);
+  dst.reserved = 0;
   ctState.current_idx = next;
+  // ---- Persistence pass (fence still held) ----
+  ct_persist_commit(dst.env_id, dst.window_count);
   ctState.env_seq++;
   memset(&ctState.acc, 0, sizeof(CtEnvironment));
   ct_reset_segment_stats();
@@ -284,6 +582,8 @@ void processCtData() {
     ct_rej_count = 0;
     ct_chans_mask = 0;
     ct_last_ch = 0xFF;
+    ct_window_bytes = 0;      // Core-0 scratch: stale pre-exit bytes would
+    ct_probe_hit_mask = 0;    // leak into the first window after re-entry
     ct_reset_segment_stats();
     ct_window_running = false;
     return;
@@ -329,6 +629,15 @@ void processCtData() {
   uint16_t chans = ct_chans_mask;
   ct_chans_mask = 0;
   uint8_t cov = (uint8_t)__builtin_popcount(chans);
+  // Byte-traffic snapshot: unconditional (mirrors the mask snapshots). The
+  // RX callback is gated on pause_sniffing, so a paused window contributes
+  // no bytes. A window that closes INVALID discards its snapshot: the EWMA
+  // fold below runs only for valid windows, so the few bytes observed
+  // during the unpaused part of an invalid window vanish — the same
+  // discard-invalid convention as every other CT statistic (obs, rej,
+  // channels). Valid-window accounting is unaffected.
+  uint32_t wbytes = ct_window_bytes;
+  ct_window_bytes = 0;
 
   if (valid) {
     ctState.acc.window_count++;
@@ -365,33 +674,11 @@ void processCtData() {
     ct_prev_s = cur_s;
     ct_have_prev = true;
 
-    // ---- Retention vs committed environment (Step-4 diagnostic) ----
-    // Read-only vs hist[]; intersection vs the committed identity sets.
-    const CtEnvironment &committed = ctState.hist[ctState.current_idx];
-    bool have_committed = (committed.first_seen != 0);
-    int b_inter = 0, s_inter = 0;
-    if (have_committed) {
-      for (uint8_t i = 0; i < nb; i++) {
-        if (!(bmask & ((uint64_t)1 << i)))
-          continue;
-        for (uint8_t j = 0; j < committed.n_bssid; j++) {
-          if (memcmp(ctState.acc.bssid[i], committed.bssid[j], 6) == 0) {
-            b_inter++;
-            break;
-          }
-        }
-      }
-      for (uint8_t i = 0; i < ns; i++) {
-        if (!(smask & ((uint32_t)1 << i)))
-          continue;
-        for (uint8_t j = 0; j < committed.n_ssid; j++) {
-          if (strcmp(ctState.acc.ssid[i], committed.ssid[j]) == 0) {
-            s_inter++;
-            break;
-          }
-        }
-      }
-    }
+    // ---- Retention-vs-hist overlap diagnostic REMOVED ----
+    // The old retention channel (and its [CT-STEP4] overlap print) was the
+    // only consumer of the historical identity arrays; both were deleted
+    // together with those arrays when environment history became compact
+    // CtEnvRecord metrics and persistence moved to CT-owned state.
 
     // Valid windows already absorbed by the baselines = win - 1
     // (window_count was incremented above; identical lifecycle to the
@@ -400,8 +687,7 @@ void processCtData() {
 
     // Per-channel trigger-crossing flags for the [CT-TRIG] diagnostic:
     // true exactly on the window where persistence reaches N_MIN from below.
-    bool cross_pop = false, cross_churn = false, cross_ret = false,
-         cross_turn = false;
+    bool cross_pop = false, cross_churn = false, cross_turn = false;
 
     // ---- Channel 1: POPULATION [B, S] — horizon-bounded baselines ----
     // mu: EWMA (alpha = 1/32), seeded with the EXACT first valid sample
@@ -419,8 +705,10 @@ void processCtData() {
       ct_ewma_mu_s_q8 = (uint16_t)(cur_s * 256);
       ct_ewma_var_b_q16 = 0;
       ct_ewma_var_s_q16 = 0;
+#if CT_DIAG_SEED
       Serial.printf("[CT-SEED] win=%u mu=%u/%u\n", (unsigned)win,
                     (unsigned)cur_b, (unsigned)cur_s);
+#endif
     } else {
       sig_b_q8 = ct_isqrt32(ct_ewma_var_b_q16); // Q8.8 (var is Q8.16)
       sig_s_q8 = ct_isqrt32(ct_ewma_var_s_q16);
@@ -497,36 +785,11 @@ void processCtData() {
       }
     }
 
-    // ---- Channel 3: SSID IDENTITY RETENTION ----
-    // Bit->SSID mapping is stable for acc's lifetime, so mask intersection
-    // IS identity intersection (no strings stored/compared here). The
-    // previous mask must be consumed BEFORE it is overwritten, and it is
-    // only meaningful if a previous VALID window exists (n_pre >= 1).
-    if (n_pre >= 1) {
-      uint16_t prev_cnt = (uint16_t)__builtin_popcount(ct_prev_smask);
-      if (prev_cnt > 0) {
-        uint16_t shared = (uint16_t)__builtin_popcount(smask & ct_prev_smask);
-        uint16_t r_q8 = (uint16_t)(((uint32_t)shared << 8) / prev_cnt); // <= 256
-        if (ct_n_ret >= 2) { // mu_R / sigma_R defined from the 3rd retention obs
-          uint32_t mu_r_q8 = ct_sum_r / ct_n_ret;
-          int32_t var_r = (int32_t)(ct_sum_r2 / ct_n_ret) -
-                          (int32_t)((ct_sum_r / ct_n_ret) * (ct_sum_r / ct_n_ret));
-          if (var_r < 0) var_r = 0;
-          uint16_t sig_r_q8 = ct_isqrt32((uint32_t)var_r); // Q8.8 (var was Q8.16)
-          uint16_t sig_eff = (sig_r_q8 > CT_SIGMA_R_FLOOR_Q8) ? sig_r_q8
-                                                              : CT_SIGMA_R_FLOOR_Q8;
-          // Directional: only LOW retention is transition evidence.
-          uint32_t excess_q8 = (mu_r_q8 > r_q8) ? mu_r_q8 - r_q8 : 0;
-          uint16_t n_ret_ev_q8 =
-              (uint16_t)(((uint32_t)excess_q8 << 8) / ((uint32_t)CT_K4 * sig_eff));
-          cross_ret = ct_evidence_update(ct_ewma_ret, ct_persist_ret, n_ret_ev_q8);
-        }
-        ct_sum_r += r_q8;
-        ct_sum_r2 += (uint32_t)r_q8 * r_q8;
-        ct_n_ret++;
-      }
-      // prev_count == 0 -> ABSTAIN: no vote, evidence state frozen.
-    }
+    // ---- Channel 3: SSID IDENTITY RETENTION — RETIRED ----
+    // Deleted with the horizon redesign's successor steps: retention was
+    // removed from the quorum when turnover (below) became the third live
+    // channel, and its sums/EWMA/persistence were removed together with the
+    // historical identity arrays it was the last consumer of.
 
     // ---- Channel 3 (LIVE): SSID IDENTITY TURNOVER ----
     // Adjacent-window identity dynamics over the touch masks (the bit->SSID
@@ -569,6 +832,38 @@ void processCtData() {
     }
     ct_prev_smask = smask;
 
+    // ---- Per-window byte traffic (environment-history metric) ----
+    // Fold ONLY valid windows into the horizon EWMAs (paused windows
+    // contribute nothing, matching every other CT statistic). Same horizon
+    // clock: alpha = 1/32, exact seed on the segment's first valid window,
+    // excursion-gated variance so transitions are never laundered into the
+    // byte-dispersion statistic. Units: KiB Q8.8 (bytes >> 2); raw-byte
+    // residuals overflow u32, hence the u64 variance and 64-bit isqrt.
+    uint32_t kb_q8 = wbytes >> 2; // bytes -> KiB Q8.8
+    if (n_pre == 0) {             // exact seed (first valid window)
+      ct_ewma_byte_mean_q8kib = kb_q8;
+      ct_ewma_byte_var_q16kib = 0;
+    } else {
+      ct_ewma_byte_mean_q8kib += (int32_t)(((int32_t)kb_q8 -
+          (int32_t)ct_ewma_byte_mean_q8kib) >> CT_BASE_SHIFT);
+      int32_t rb_byte = (int32_t)kb_q8 - (int32_t)ct_ewma_byte_mean_q8kib;
+      int32_t gate_byte = (int32_t)3 * ct_isqrt64(ct_ewma_byte_var_q16kib) +
+                          CT_VAR_FLOOR_Q8;
+      if (n_pre < 4 || (rb_byte <= gate_byte && -rb_byte <= gate_byte)) {
+        // var += (resid^2 - var) / 32 — signed delta. Both operands are
+        // non-negative, but the difference is negative whenever the
+        // variance is decaying (new squared residual below the running
+        // variance); the previous unsigned form underflowed u64 and
+        // corrupted the variance on exactly those windows. delta is
+        // bounded below by -(var >> 5), so the sum cannot go negative.
+        int64_t r2_q16 = (int64_t)rb_byte * rb_byte;
+        int64_t delta = (r2_q16 >> CT_BASE_SHIFT) -
+                        (int64_t)(ct_ewma_byte_var_q16kib >> CT_BASE_SHIFT);
+        ct_ewma_byte_var_q16kib =
+            (uint64_t)((int64_t)ct_ewma_byte_var_q16kib + delta);
+      }
+    }
+
     // ---- Envelope statistics absorb the window (diagnostic range display)
     // ---- Population mean/variance are absorbed inside the channel block
     // above (horizon EWMAs, post-evidence).
@@ -585,17 +880,19 @@ void processCtData() {
     // ct_n_obs++ removed — n_pre derives from acc.window_count now.
 
     // Snapshots for the post-fence diagnostics (pre-commit segment state).
+#if CT_DIAG_STEPS || CT_DIAG_TRIG
     uint16_t snap_mub = ct_ewma_mu_b_q8, snap_mus = ct_ewma_mu_s_q8;
     uint16_t snap_sgb = sig_b_q8, snap_sgs = sig_s_q8; // horizon sigma
     uint8_t snap_mnb = ct_min_b, snap_mxb = ct_max_b;
     uint8_t snap_mns = ct_min_s, snap_mxs = ct_max_s;
     bool snap_have = ct_have_obs;
-    uint16_t snap_ep = ct_ewma_pop, snap_ec = ct_ewma_churn, snap_er = ct_ewma_ret;
+    uint16_t snap_ep = ct_ewma_pop, snap_ec = ct_ewma_churn;
     uint16_t snap_et = ct_ewma_turn;
-    uint8_t snap_pp = ct_persist_pop, snap_pc = ct_persist_churn,
-            snap_pr = ct_persist_ret;
+    uint8_t snap_pp = ct_persist_pop, snap_pc = ct_persist_churn;
     uint8_t snap_pt = ct_persist_turn;
+    uint32_t snap_bmean = ct_ewma_byte_mean_q8kib;
     bool snap_t = ct_prov_is_t;
+#endif // CT_DIAG_STEPS || CT_DIAG_TRIG
 
     // ---- 2-of-3 LIVE quorum: {population, churn, turnover} ----
     // Retention persistence is deliberately excluded (diagnostic only).
@@ -606,25 +903,12 @@ void processCtData() {
 
     // ---- TEMPORARY Step-3/4/4.1/4.2/5 diagnostics (Core 1 only) ----
     // Post-fence, snapshot-driven; remove as segmentation stabilizes.
+#if CT_DIAG_STEPS
     Serial.printf("[CT-STEP3] window=%u bssid=%u ssid=%u trunc=%s%s\n",
                   (unsigned)win, (unsigned)nb, (unsigned)ns,
                   (fl & CT_FLAG_BSSID_TRUNC) ? "B" : "-",
                   (fl & CT_FLAG_SSID_TRUNC) ? "S" : "-");
-    if (have_committed) {
-      char bret[12], sret[12];
-      if (committed.n_bssid > 0)
-        snprintf(bret, sizeof(bret), "%u%%", (unsigned)(b_inter * 100 / committed.n_bssid));
-      else
-        snprintf(bret, sizeof(bret), "n/a");
-      if (committed.n_ssid > 0)
-        snprintf(sret, sizeof(sret), "%u%%", (unsigned)(s_inter * 100 / committed.n_ssid));
-      else
-        snprintf(sret, sizeof(sret), "n/a");
-      Serial.printf("[CT-STEP4] win=%u Bret=%s (%u/%u) Sret=%s (%u/%u)\n",
-                    (unsigned)win, bret,
-                    (unsigned)b_inter, (unsigned)committed.n_bssid,
-                    sret, (unsigned)s_inter, (unsigned)committed.n_ssid);
-    }
+    // [CT-STEP4] (retention overlap) removed with the retention machinery.
     {
       char db[8], ddb[8], ds[8], dds[8];
       if (have_d) { snprintf(db, sizeof(db), "%+d", d_b); snprintf(ds, sizeof(ds), "%+d", d_s); }
@@ -652,19 +936,23 @@ void processCtData() {
         snprintf(rb, sizeof(rb), "n/a"); snprintf(rs, sizeof(rs), "n/a");
         snprintf(thr, sizeof(thr), "n/a");
       }
-      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s range=%s/%s thr=%s\n",
+      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s range=%s/%s thr=%s bytes=%u.%02uKiB\n",
                     (unsigned)win, (unsigned)obs, (unsigned)rej, (unsigned)cov,
-                    mb, rb, rs, thr);
+                    mb, rb, rs, thr,
+                    (unsigned)(snap_bmean >> 8),
+                    (unsigned)(((snap_bmean & 0xFF) * 100) >> 8));
     }
     Serial.printf(
-        "[CT-STEP5] win=%u class=%c ewma=%u/%u/%u/%u persist=%u/%u/%u/%u\n",
+        "[CT-STEP5] win=%u class=%c ewma=%u/%u/%u persist=%u/%u/%u\n",
         (unsigned)win, snap_t ? 'T' : 'E', (unsigned)(snap_ep >> 2),
-        (unsigned)(snap_ec >> 2), (unsigned)(snap_er >> 2),
+        (unsigned)(snap_ec >> 2),
         (unsigned)(snap_et >> 2), (unsigned)snap_pp, (unsigned)snap_pc,
-        (unsigned)snap_pr, (unsigned)snap_pt);
+        (unsigned)snap_pt);
+#endif // CT_DIAG_STEPS
     // One line per channel that crossed persistence >= N_MIN on THIS window
     // (transition-only; repeated triggers while staying above are silent).
     // Diagnostic only — the 2-of-3 quorum remains the sole commit criterion.
+#if CT_DIAG_TRIG
     if (cross_pop)
       Serial.printf("[CT-TRIG] win=%u channel=POP ewma=%u.%02u persist=%u\n",
                     (unsigned)win, (unsigned)(snap_ep >> 8),
@@ -673,21 +961,20 @@ void processCtData() {
       Serial.printf("[CT-TRIG] win=%u channel=CHURN ewma=%u.%02u persist=%u\n",
                     (unsigned)win, (unsigned)(snap_ec >> 8),
                     (unsigned)(((snap_ec & 0xFF) * 100) >> 8), (unsigned)snap_pc);
-    if (cross_ret)
-      Serial.printf("[CT-TRIG] win=%u channel=RET ewma=%u.%02u persist=%u\n",
-                    (unsigned)win, (unsigned)(snap_er >> 8),
-                    (unsigned)(((snap_er & 0xFF) * 100) >> 8), (unsigned)snap_pr);
     if (cross_turn)
       Serial.printf("[CT-TRIG] win=%u channel=TURN ewma=%u.%02u persist=%u\n",
                     (unsigned)win, (unsigned)(snap_et >> 8),
                     (unsigned)(((snap_et & 0xFF) * 100) >> 8), (unsigned)snap_pt);
+#endif // CT_DIAG_TRIG
     // ---- END TEMPORARY ----
   } else {
     // Invalid (paused) window: contributes nothing — no statistics, no
     // evidence, no classification change, no commit, no window_count.
+#if CT_DIAG_STEPS
     Serial.printf("[CT-STEP4.2] win=%u valid=N obs=0 rej=%u cov=%u/13 mean=n/a range=n/a/n/a\n",
                   (unsigned)(ctState.acc.window_count + 1), (unsigned)rej,
                   (unsigned)cov);
+#endif // CT_DIAG_STEPS
     // ---- END TEMPORARY ----
   }
 

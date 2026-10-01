@@ -240,7 +240,7 @@ int addSsidToPool(const char* ssid, int head_idx, bool &already_exists, bool &ad
     return head_idx;
   }
 }
-void processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor, int8_t rssi, uint32_t hw_hash) {
+int processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_vendor, int8_t rssi, uint32_t hw_hash) {
   int target_slot = -1;
   unsigned long oldest_time = 0xFFFFFFFF;
   int oldest_slot = 0;
@@ -343,6 +343,8 @@ void processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known
       uint8_t bit_idx = getSsidBitIndex(ssid);
       probeList[target_slot].pnl_hash |= (1ULL << bit_idx);
   }
+
+  return target_slot;
 }
 void processPendingVendors() {
   // ==========================================

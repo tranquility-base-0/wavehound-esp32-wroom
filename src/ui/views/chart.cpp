@@ -6,6 +6,7 @@
 #include "modes/ap_scanner.h"
 #include "osint/vendor.h"
 #include "parsers/parser_common.h"
+#include "modes/ct.h"             // ct_window_bytes — CT bottom-pane traffic metric
 #include "UbuntuMono_Regular11pt7b.h"
 #include "UbuntuMono_Regular9pt7b.h"
 #include "UbuntuMono_Regular8pt7b.h"
@@ -77,7 +78,7 @@ void drawChartHeader() {
     }
   }
   else if (currentRadioMode == RADIO_CT) {
-    snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | CT SWEEP", CHANNELS[current_ch_idx]);
+    snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | CHASING TAIL", CHANNELS[current_ch_idx]);
   }
   else if (currentRadioMode == RADIO_WIFI) {
     if (!target_locked) {
@@ -407,12 +408,292 @@ void drawTemporalLegend() {
     // Draw the white separator line between the new bottom legend and the waterfall chart
     tft.drawLine(0, chart_start_y, 480, chart_start_y, COLOR_HOT_CHEST);
 }
+
+// ============================================================================
+// Shared stacked-bar plotter for the waterfall's four mode branches
+// (RADIO_WIFI / RADIO_BLE / RADIO_AP / RADIO_CHANNELS), which were four
+// byte-identical copies of this logic differing only in data source.
+// Draws the EXACT sequence the duplicated blocks drew: per-device value
+// bars top-down from split_y-1 (2-px strokes, colors[i]), fraction math
+// (log10 when useLogScale — log10(0+1)=0 makes the BLE "omit empty other"
+// and the Wi-Fi "always add other" variants numerically identical), the
+// bar_height clamp, then the "other" fill in colors[8] or, when other==0,
+// the caller-supplied fallback color (BLE: capped ble_count-1; the other
+// modes: raw count-1, matching the pre-refactor index including its
+// count>9 out-of-bounds quirk, deliberately left as-is).
+// vals: up to 6 precomputed per-device values; n = occupied entries;
+// other = residual bucket value; total = metric (vals + other).
+// ============================================================================
+static void drawStackedBars(uint32_t col_x, int split_y, int chart_start_y,
+                            const uint32_t vals[6], int n,
+                            uint32_t other, uint32_t total,
+                            int fallback_idx) {
+    if (total == 0) return;
+
+    int current_y = split_y - 1;
+
+    double log_total = 0;
+    if (useLogScale) {
+        for (int j = 0; j < n; j++)
+            log_total += log10((double)vals[j] + 1.0);
+        log_total += log10((double)other + 1.0);
+    }
+
+    for (int i = 0; i < n; i++) {
+        double fraction;
+        if (useLogScale) fraction = log10((double)vals[i] + 1.0) / log_total;
+        else fraction = (double)vals[i] / (double)total;
+
+        int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
+        if (bar_height > (split_y - chart_start_y - 1))
+            bar_height = split_y - chart_start_y - 1;
+
+        tft.drawLine(col_x, current_y, col_x, current_y - bar_height, colors[i]);
+        tft.drawLine(col_x + 1, current_y, col_x + 1, current_y - bar_height, colors[i]);
+        current_y -= bar_height;
+    }
+
+    if (other > 0 && current_y > chart_start_y) {
+        tft.drawLine(col_x, current_y, col_x, chart_start_y + 1, colors[8]);
+        tft.drawLine(col_x + 1, current_y, col_x + 1, chart_start_y + 1, colors[8]);
+    } else if (other == 0 && current_y > chart_start_y && n > 0) {
+        tft.drawLine(col_x, current_y, col_x, chart_start_y + 1, colors[fallback_idx]);
+        tft.drawLine(col_x + 1, current_y, col_x + 1, chart_start_y + 1, colors[fallback_idx]);
+    }
+}
+
+// ==================== CT REAL-TIME SCREEN ====================
+// Top-band renderer over ctState (RADIO_CT). CT draws these bands and then
+// FALLS THROUGH into the shared bottom-pane traffic engine in
+// drawWaterfallChart(), which CT feeds via the ct_window_bytes delta branch.
+// Bands: persistent-device list (y18..161, 11pt single column, 8 rows ×
+// 18 px), SEP1 (y163), RF-env list (y165..222, 8pt, 6 rows × 10 px), SEP2
+// (y223), segmented timeline bar (y225..262, 38 px), SEP3 = the modes'
+// existing split_y at y263 (drawn by the shared engine), absolute traffic
+// chart y264..298. Lists redraw at 1 Hz or when env_seq/persist-count
+// change; the bar redraws fully each call (small region). No new fonts
+// (9/11pt glyphs already linked), no dynamic allocation, no caching of
+// strings. The open segment's class/mu/sigma live in ct.cpp file-statics
+// and are not visible here, so its row shows id/windows/duration only.
+#define CT_PLIST_Y     18
+#define CT_PLIST_ROWH  18
+#define CT_PLIST_ROWS  8
+#define CT_SEP1_Y      163
+#define CT_ENV_Y       165
+#define CT_ENV_ROWH    10
+#define CT_SEP2_Y      223
+#define CT_BAR_Y       225
+#define CT_BAR_H       38
+#define CT_SEP3_Y      263     // == split_y (chart_start_y + 3/4 of chart area)
+#define CT_VENDOR_MAX  9
+
+static void ctFmtAge(uint32_t sec, char* b, size_t n) {
+    if (sec < 60)      snprintf(b, n, "%lus", (unsigned long)sec);
+    else if (sec < 3600) snprintf(b, n, "%lum", (unsigned long)(sec / 60));
+    else               snprintf(b, n, "%luh", (unsigned long)(sec / 3600));
+}
+
+static void drawCtScreen() {
+    static uint32_t last_lists_ms = 0;
+    static uint16_t last_env_seq = 0xFFFF;
+    static uint8_t  last_persist_count = 0xFF;
+
+    uint32_t now_ms = millis();
+    bool dirty = (ctState.env_seq != last_env_seq) ||
+                 (ctState.persist.count != last_persist_count);
+
+    // ---- Timeline bar (y285..295): E=DARKGREY, T=RED, open=black ----
+    tft.fillRect(0, CT_BAR_Y, 480, CT_BAR_H, TFT_BLACK);
+    tft.drawRect(0, CT_BAR_Y, 480, CT_BAR_H, TFT_WHITE);
+
+    // Committed envs, newest->oldest, straight off the hist ring.
+    const CtEnvRecord* envs[MAX_CT_ENVIRONMENTS];
+    int n_envs = 0;
+    for (int k = 0; k < MAX_CT_ENVIRONMENTS; k++) {
+        const CtEnvRecord* e =
+            &ctState.hist[(ctState.current_idx + MAX_CT_ENVIRONMENTS - k) % MAX_CT_ENVIRONMENTS];
+        if (e->window_count != 0) envs[n_envs++] = e;
+    }
+    // envs[0] is newest. t0 = oldest committed first_seen, else acc start.
+    uint32_t t0 = (n_envs > 0) ? envs[n_envs - 1]->first_seen : ctState.acc.first_seen;
+    uint32_t total_ms = (t0 != 0) ? (now_ms - t0) : 0;
+    if (total_ms == 0) {
+        // No observations yet: single full-width bar, "E0" centered (spec).
+        tft.setFreeFont(&UbuntuMono_Regular8pt7b);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextColor(TFT_WHITE);
+        tft.drawString("E0", 240, CT_BAR_Y + CT_BAR_H / 2);
+        tft.setTextDatum(TL_DATUM);
+        t0 = total_ms = 0;
+    } else {
+        // x boundaries accumulate left->right: width_i = span_i*480/total.
+        // Spans come off the first_seen chain (fs_i -> fs_{i+1}); the last
+        // committed segment ends at acc.first_seen, open segment fills the
+        // rest to now. Floor-rounding slack is absorbed by the open segment.
+        int xcur = 0;
+        tft.setFreeFont(&UbuntuMono_Regular8pt7b);
+        tft.setTextDatum(MC_DATUM);
+        for (int i = n_envs - 1; i >= 0; i--) {  // oldest -> newest
+            uint32_t end_ms = (i > 0) ? envs[i - 1]->first_seen : ctState.acc.first_seen;
+            uint32_t span = (end_ms > envs[i]->first_seen) ? (end_ms - envs[i]->first_seen) : 0;
+            // Label first: the min segment width is 2 px more than the
+            // identifier's own width so every segment can carry it.
+            char lb[8];
+            snprintf(lb, sizeof(lb), (envs[i]->flags & CT_FLAG_CLASS_T) ? "T%u" : "E%u",
+                     envs[i]->env_id);
+            int tw = strlen(lb) * 6;
+            int min_w = tw + 2;
+            int w = (int)(((uint64_t)span * 480) / total_ms);
+            if (w < min_w) w = min_w;
+            if (w > 0) {
+                uint16_t fill = (envs[i]->flags & CT_FLAG_CLASS_T) ? TFT_RED : TFT_DARKGREY;
+                tft.fillRect(xcur, CT_BAR_Y + 1, w, CT_BAR_H - 2, fill);
+                if (xcur > 0) tft.drawFastVLine(xcur, CT_BAR_Y + 1, CT_BAR_H - 2, TFT_WHITE);
+                if (w >= tw + 4) tft.setTextColor(TFT_WHITE, fill);
+                else tft.setTextColor(TFT_WHITE);
+                tft.drawString(lb, xcur + w / 2, CT_BAR_Y + CT_BAR_H / 2);
+            }
+            xcur += w;
+            if (xcur >= 480) { xcur = 480; break; }
+        }
+        // Open (uncommitted) segment: black inside the white outline.
+        if (xcur < 480 && ctState.acc.first_seen != 0) {
+            char lb[8];
+            snprintf(lb, sizeof(lb), "E%u", ctState.env_seq);
+            tft.setTextColor(TFT_WHITE);
+            tft.drawString(lb, xcur + (480 - xcur) / 2, CT_BAR_Y + CT_BAR_H / 2);
+        }
+        tft.setTextDatum(TL_DATUM);
+    }
+
+    // SEP3: the modes' shared split_y line (y263). The bottom-pane engine
+    // only draws it on a rescale, so CT keeps it persistent here.
+    tft.drawLine(0, CT_SEP3_Y, 480, CT_SEP3_Y, COLOR_HOT_CHEST);
+
+    // ---- Lists: 1 Hz or dirty ----
+    if (!dirty && (now_ms - last_lists_ms) < 1000) return;
+    last_lists_ms = now_ms;
+    last_env_seq = ctState.env_seq;
+    last_persist_count = ctState.persist.count;
+
+    tft.fillRect(0, CT_PLIST_Y, 480, CT_ENV_Y + 6 * CT_ENV_ROWH - CT_PLIST_Y, TFT_BLACK);
+
+    // Band separators (drawn after the 1 Hz list clear; SEP3/split_y at y263
+    // lives below this clear and is drawn by the shared bottom-pane engine).
+    tft.drawLine(0, CT_SEP1_Y, 480, CT_SEP1_Y, COLOR_HOT_CHEST);
+    tft.drawLine(0, CT_SEP2_Y, 480, CT_SEP2_Y, COLOR_HOT_CHEST);
+
+    // ---- Persistent-device list (top 8 by last_seen, single column) ----
+    uint8_t ord[CT_PERSIST_DEVICES];
+    int n_dev = ctState.persist.count;
+    for (int i = 0; i < n_dev; i++) ord[i] = i;
+    for (int i = 1; i < n_dev; i++) {          // insertion sort, last_seen desc
+        uint8_t v = ord[i];
+        int j = i - 1;
+        while (j >= 0 && ctState.persist.dev[ord[j]].last_seen < ctState.persist.dev[v].last_seen) {
+            ord[j + 1] = ord[j];
+            j--;
+        }
+        ord[j + 1] = v;
+    }
+
+    tft.setFreeFont(&UbuntuMono_Regular11pt7b);
+    tft.setTextDatum(TL_DATUM);
+    int y = CT_PLIST_Y;
+    for (int r = 0; r < n_dev && r < CT_PLIST_ROWS; r++) {
+        const CtPersistDevice* d = &ctState.persist.dev[ord[r]];
+        char a1[6], a2[6], row[52];
+        ctFmtAge((now_ms - d->first_seen) / 1000, a1, sizeof(a1));
+        ctFmtAge((now_ms - d->last_seen) / 1000, a2, sizeof(a2));
+
+        int p = snprintf(row, sizeof(row), "%u.", r + 1);
+        for (int j = 0; j < 6; j++) {          // inline MAC hex writer
+            row[p++] = "0123456789ABCDEF"[d->mac[j] >> 4];
+            row[p++] = "0123456789ABCDEF"[d->mac[j] & 0xF];
+        }
+        row[p++] = ' ';
+        const char* v = d->vendor[0] ? d->vendor : "--";
+        for (int j = 0; j < CT_VENDOR_MAX && v[j]; j++) row[p++] = v[j];
+        row[p++] = ' ';
+        p += snprintf(row + p, sizeof(row) - p, "%s|%s ", a1, a2);
+        // env ids: first 3 + "+N" overflow (persist table is the probe/AP
+        // candidate pool; entries never carry more than CT_MAX_ENV list)
+        for (int j = 0; j < 3 && j < d->env_count; j++) {
+            if (p > (int)sizeof(row) - 9) break;      // room for worst "E65535,"
+            p += snprintf(row + p, sizeof(row) - p, "E%u,", (unsigned)d->env_seen[j]);
+        }
+        if (p <= (int)sizeof(row) - 5 &&
+            (d->env_count > 3 || (d->flags & CT_PFLAG_ENV_OVF)))
+            p += snprintf(row + p, sizeof(row) - p, "+%u", (unsigned)d->env_count);
+        else if (p > 0 && row[p - 1] == ',') p--;   // drop trailing comma
+        row[p] = '\0';
+
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString(row, 2, y);
+        y += CT_PLIST_ROWH;
+    }
+
+    // ---- RF-env list (open segment first, then newest committed) ----
+    tft.setFreeFont(&UbuntuMono_Regular8pt7b);
+    y = CT_ENV_Y;
+    if (ctState.acc.first_seen != 0) {         // open row: limited fields
+        char a1[6], row[32];
+        ctFmtAge((now_ms - ctState.acc.first_seen) / 1000, a1, sizeof(a1));
+        snprintf(row, sizeof(row), "E%u %s",
+                 (unsigned)ctState.env_seq, a1);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString(row, 2, y);
+        y += CT_ENV_ROWH;
+    }
+    for (int i = 0; i < n_envs && y < CT_ENV_Y + 6 * CT_ENV_ROWH; i++) {
+        const CtEnvRecord* e = envs[i];
+        char a1[6], row[64];
+        ctFmtAge((e->last_seen - e->first_seen) / 1000, a1, sizeof(a1));
+        // Traffic per window: horizon EWMA mean (KiB Q8.8, printed as
+        // <mean>K with 2 decimals) and CV = std/mean in percent (same Q8.8
+        // scale -> ratio is scale-free). Same pair for the per-window
+        // BSSID/SSID population counts (mu_b/sig_b, mu_s/sig_s, Q8.8).
+        // mean == 0 -> its CV is unreportable ("--").
+        // Note: ui_utils' formatTotalUnit is integer-only (bytes/1024
+        // truncation) — coarser than the Q8.8 decimals we already have,
+        // so it is deliberately not used here.
+        const char* idc = (e->flags & CT_FLAG_CLASS_T) ? "T%u" : "E%u";
+        char id[8];
+        snprintf(id, sizeof(id), idc, (unsigned)e->env_id);
+        uint32_t means[3] = { e->byte_mean_q8kib, e->mu_b_q8, e->mu_s_q8 };
+        uint32_t stds[3]  = { e->byte_std_q8kib, e->sig_b_q8, e->sig_s_q8 };
+        int p = snprintf(row, sizeof(row), "%s %s %lu.%02luK", id, a1,
+                         (unsigned long)(means[0] >> 8),
+                         (unsigned long)(((means[0] & 0xFF) * 100) >> 8));
+        for (int q = 0; q < 3; q++) {
+            if (p >= (int)sizeof(row) - 14) break;   // room for worst " CV999%"
+            if (means[q] == 0)
+                p += snprintf(row + p, sizeof(row) - p, " CV--");
+            else {
+                unsigned cvq = (unsigned)(((uint64_t)stds[q] * 100) / means[q]);
+                if (cvq > 999) cvq = 999;
+                p += snprintf(row + p, sizeof(row) - p, " CV%u%%", cvq);
+            }
+        }
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+        tft.drawString(row, 2, y);
+        y += CT_ENV_ROWH;
+    }
+}
+
 void drawWaterfallChart() {
-    // 1. Gate the legends
-    if (currentRadioMode != RADIO_PCAP) {
+    // 1. Gate the legends (CT replaces them with its own screen below)
+    if (currentRadioMode != RADIO_PCAP && currentRadioMode != RADIO_CT) {
         drawTemporalLegend();
         drawPersistentTopN();
     }
+
+    // CT: top bands come from drawCtScreen(); execution then FALLS THROUGH
+    // into the shared bottom-pane traffic engine below. CT feeds it via the
+    // ct_window_bytes delta branch in the plotting switch and shares the
+    // eraser/scaling/absolute-bar machinery (eraser is split_y-gated like
+    // PCAP; CT tick marks and 100%/50%/time-scale labels are gated off).
+    if (currentRadioMode == RADIO_CT) drawCtScreen();
 
     int chart_area_height = CHART_BOTTOM - chart_start_y;
 
@@ -421,8 +702,9 @@ void drawWaterfallChart() {
 
     int ERASER_WIDTH = 44;
 
-    // 3. Adjust the eraser to ONLY clear the bottom pane in PCAP mode
-    int clear_start_y = (currentRadioMode == RADIO_PCAP) ? (split_y + 1) : (chart_start_y + 1);
+    // 3. Adjust the eraser to ONLY clear the bottom pane in PCAP/CT modes
+    int clear_start_y = (currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT)
+                            ? (split_y + 1) : (chart_start_y + 1);
     int clear_height = CHART_BOTTOM - clear_start_y;
 
     // Pure wipe logic (using dynamic clear_start_y and clear_height)
@@ -434,176 +716,92 @@ void drawWaterfallChart() {
         tft.fillRect(0, clear_start_y, ERASER_WIDTH - w1, clear_height, TFT_BLACK);
     }
 
-    // X-Axis Time Ticks
-    if (current_x % 60 == 0) {
-        tft.drawLine(current_x, split_y - 3, current_x, split_y + 3, COLOR_HOT_CHEST);
-        tft.drawLine(current_x + 1, split_y - 3, current_x + 1, split_y + 3, COLOR_HOT_CHEST);
-    } else {
-        tft.drawPixel(current_x, split_y, COLOR_HOT_CHEST);
-        tft.drawPixel(current_x + 1, split_y, COLOR_HOT_CHEST);
+    // X-Axis Time Ticks (gated off for CT: split_y is the SEP3 separator line
+    // there, and tick marks would nick the segment bar / traffic chart)
+    if (currentRadioMode != RADIO_CT) {
+        if (current_x % 60 == 0) {
+            tft.drawLine(current_x, split_y - 3, current_x, split_y + 3, COLOR_HOT_CHEST);
+            tft.drawLine(current_x + 1, split_y - 3, current_x + 1, split_y + 3, COLOR_HOT_CHEST);
+        } else {
+            tft.drawPixel(current_x, split_y, COLOR_HOT_CHEST);
+            tft.drawPixel(current_x + 1, split_y, COLOR_HOT_CHEST);
+        }
     }
 
-    int current_y = split_y - 1;
+    // (the per-mode bar cursors now live inside drawStackedBars)
     uint32_t current_total_metric = 0;
+    static uint32_t ct_last_wb = 0;   // CT traffic-metric tracker (CT branch below)
 
     // --- CHART PLOTTING ---
     if (currentRadioMode == RADIO_WIFI) {
+        uint32_t vals[6];
+        int n = 0;
         uint32_t total_bytes = sortOtherBytes;
-        for(int i = 0; i < 6 && i < sortMacCount; i++) total_bytes += (sortData[i].tx_bytes + sortData[i].rx_bytes);
+        for (int i = 0; i < 6 && i < sortMacCount; i++) {
+            vals[n++] = sortData[i].tx_bytes + sortData[i].rx_bytes;
+            total_bytes += vals[n - 1];
+        }
         current_total_metric = total_bytes;
 
-        if (total_bytes > 0) {
-            double log_total = 0;
-            if (useLogScale) {
-                for(int j = 0; j < 6 && j < sortMacCount; j++) {
-                    uint32_t device_total = sortData[j].tx_bytes + sortData[j].rx_bytes;
-                    log_total += log10((double)device_total + 1.0);
-                }
-                log_total += log10((double)sortOtherBytes + 1.0);
-            }
-
-            for(int i = 0; i < 6 && i < sortMacCount; i++) {
-                double fraction;
-                uint32_t current_device_bytes = sortData[i].tx_bytes + sortData[i].rx_bytes;
-
-                if (useLogScale) fraction = log10((double)current_device_bytes + 1.0) / log_total;
-                else fraction = (double)current_device_bytes / (double)total_bytes;
-
-                int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
-                if (bar_height > (split_y - chart_start_y - 1)) bar_height = split_y - chart_start_y - 1;
-
-                tft.drawLine(current_x, current_y, current_x, current_y - bar_height, colors[i]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, current_y - bar_height, colors[i]);
-                current_y -= bar_height;
-            }
-
-            if (sortOtherBytes > 0 && current_y > chart_start_y) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[8]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[8]);
-            } else if (sortOtherBytes == 0 && current_y > chart_start_y && sortMacCount > 0) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[sortMacCount - 1]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[sortMacCount - 1]);
-            }
-        }
+        drawStackedBars(current_x, split_y, chart_start_y, vals, n,
+                        sortOtherBytes, total_bytes, sortMacCount - 1);
     }
     else if (currentRadioMode == RADIO_BLE) {
-        uint32_t total_hits = 0;
+        uint32_t vals[6];
         uint32_t other_hits = 0;
         int ble_count = (sortBleCount > 6) ? 6 : sortBleCount;
+        int n = 0;
+        uint32_t total_hits = 0;
 
-        for(int i = 0; i < ble_count; i++) total_hits += sortBleData[i].hits;
+        for (int i = 0; i < ble_count; i++) {
+            vals[n++] = sortBleData[i].hits;
+            total_hits += sortBleData[i].hits;
+        }
         if (sortBleCount > 6) {
             for (int i = 6; i < sortBleCount; i++) other_hits += sortBleData[i].hits;
             total_hits += other_hits;
         }
         current_total_metric = total_hits;
 
-        if (total_hits > 0) {
-            double log_total = 0;
-            if (useLogScale) {
-                for(int j = 0; j < ble_count; j++) log_total += log10((double)sortBleData[j].hits + 1.0);
-                if (other_hits > 0) log_total += log10((double)other_hits + 1.0);
-            }
-
-            for(int i = 0; i < ble_count; i++) {
-                double fraction;
-                if (useLogScale) fraction = log10((double)sortBleData[i].hits + 1.0) / log_total;
-                else fraction = (double)sortBleData[i].hits / (double)total_hits;
-
-                int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
-                if (bar_height > (split_y - chart_start_y - 1)) bar_height = split_y - chart_start_y - 1;
-
-                tft.drawLine(current_x, current_y, current_x, current_y - bar_height, colors[i]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, current_y - bar_height, colors[i]);
-                current_y -= bar_height;
-            }
-
-            if (other_hits > 0 && current_y > chart_start_y) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[8]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[8]);
-            } else if (other_hits == 0 && current_y > chart_start_y && ble_count > 0) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[ble_count - 1]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[ble_count - 1]);
-            }
-        }
+        drawStackedBars(current_x, split_y, chart_start_y, vals, n,
+                        other_hits, total_hits, ble_count - 1);
     }
     else if (currentRadioMode == RADIO_AP) {
+        uint32_t vals[6];
+        int n = 0;
         uint32_t total_bytes = sortOtherBytes;
-        for(int i = 0; i < 6 && i < sortApCount; i++) total_bytes += (sortApData[i].tx_bytes + sortApData[i].rx_bytes);
+        for (int i = 0; i < 6 && i < sortApCount; i++) {
+            vals[n++] = sortApData[i].tx_bytes + sortApData[i].rx_bytes;
+            total_bytes += vals[n - 1];
+        }
         current_total_metric = total_bytes;
 
-        if (total_bytes > 0) {
-            double log_total = 0;
-            if (useLogScale) {
-                for(int j = 0; j < 6 && j < sortApCount; j++) {
-                    uint32_t device_total = sortApData[j].tx_bytes + sortApData[j].rx_bytes;
-                    log_total += log10((double)device_total + 1.0);
-                }
-                log_total += log10((double)sortOtherBytes + 1.0);
-            }
-
-            for(int i = 0; i < 6 && i < sortApCount; i++) {
-                double fraction;
-                uint32_t current_device_bytes = sortApData[i].tx_bytes + sortApData[i].rx_bytes;
-
-                if (useLogScale) fraction = log10((double)current_device_bytes + 1.0) / log_total;
-                else fraction = (double)current_device_bytes / (double)total_bytes;
-
-                int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
-                if (bar_height > (split_y - chart_start_y - 1)) bar_height = split_y - chart_start_y - 1;
-
-                tft.drawLine(current_x, current_y, current_x, current_y - bar_height, colors[i]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, current_y - bar_height, colors[i]);
-                current_y -= bar_height;
-            }
-
-            if (sortOtherBytes > 0 && current_y > chart_start_y) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[8]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[8]);
-            } else if (sortOtherBytes == 0 && current_y > chart_start_y && sortApCount > 0) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[sortApCount - 1]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[sortApCount - 1]);
-            }
-        }
+        drawStackedBars(current_x, split_y, chart_start_y, vals, n,
+                        sortOtherBytes, total_bytes, sortApCount - 1);
     }
     else if (currentRadioMode == RADIO_CHANNELS) {
+        uint32_t vals[6];
+        int n = 0;
         uint32_t total_bytes = sortOtherBytes;
-        for(int i = 0; i < 6 && i < sortChannelCount; i++) total_bytes += (sortChannelData[i].tx_bytes + sortChannelData[i].rx_bytes);
+        for (int i = 0; i < 6 && i < sortChannelCount; i++) {
+            vals[n++] = sortChannelData[i].tx_bytes + sortChannelData[i].rx_bytes;
+            total_bytes += vals[n - 1];
+        }
         current_total_metric = total_bytes;
 
-        if (total_bytes > 0) {
-            double log_total = 0;
-            if (useLogScale) {
-                for(int j = 0; j < 6 && j < sortChannelCount; j++) {
-                    uint32_t c_total = sortChannelData[j].tx_bytes + sortChannelData[j].rx_bytes;
-                    log_total += log10((double)c_total + 1.0);
-                }
-                log_total += log10((double)sortOtherBytes + 1.0);
-            }
-
-            for(int i = 0; i < 6 && i < sortChannelCount; i++) {
-                double fraction;
-                uint32_t current_c_bytes = sortChannelData[i].tx_bytes + sortChannelData[i].rx_bytes;
-
-                if (useLogScale) fraction = log10((double)current_c_bytes + 1.0) / log_total;
-                else fraction = (double)current_c_bytes / (double)total_bytes;
-
-                int bar_height = (int)(fraction * (split_y - chart_start_y - 1));
-                if (bar_height > (split_y - chart_start_y - 1)) bar_height = split_y - chart_start_y - 1;
-
-                tft.drawLine(current_x, current_y, current_x, current_y - bar_height, colors[i]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, current_y - bar_height, colors[i]);
-                current_y -= bar_height;
-            }
-
-            if (sortOtherBytes > 0 && current_y > chart_start_y) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[8]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[8]);
-            } else if (sortOtherBytes == 0 && current_y > chart_start_y && sortChannelCount > 0) {
-                tft.drawLine(current_x, current_y, current_x, chart_start_y + 1, colors[sortChannelCount - 1]);
-                tft.drawLine(current_x + 1, current_y, current_x + 1, chart_start_y + 1, colors[sortChannelCount - 1]);
-            }
-        }
+        drawStackedBars(current_x, split_y, chart_start_y, vals, n,
+                        sortOtherBytes, total_bytes, sortChannelCount - 1);
+    }
+    else if (currentRadioMode == RADIO_CT) {
+        // Absolute traffic metric: per-tick delta of the CT window byte
+        // accumulator (ct_window_bytes, ct.h). The CT engine zero-rolls it
+        // every 5 s (ct.cpp:639); on a roll this tick's volume is the
+        // pre-reset bytes (last_wb) plus the post-reset bytes (wb), which
+        // conserves total mass. Windows therefore appear as one full-window
+        // bar every ~5th tick — bursty but truthful.
+        uint32_t wb = ct_window_bytes;
+        current_total_metric = (wb >= ct_last_wb) ? (wb - ct_last_wb) : (wb + ct_last_wb);
+        ct_last_wb = wb;
     }
     static uint32_t last_rendered_leak_timestamp = 0;
     if (currentRadioMode == RADIO_PCAP) {
@@ -808,6 +1006,8 @@ void drawWaterfallChart() {
         memcpy(last_seen_bssid, target_bssid, 6);
 
         memset(traffic_history, 0, sizeof(traffic_history));
+        ct_last_wb = 0;   // CT engine zeroes ct_window_bytes on exit; avoid a
+                          // stale-tracker spike on CT re-entry
         did_rescale = true;
     }
 
@@ -896,7 +1096,8 @@ void drawWaterfallChart() {
         tft.setTextColor(COLOR_HOT_CHEST);
 
         // Gate the top pane percentages AND the time scale so they don't overwrite PCAP text
-        if (currentRadioMode != RADIO_PCAP) {
+        // (CT too: those labels would land on the segment bar / env list)
+        if (currentRadioMode != RADIO_PCAP && currentRadioMode != RADIO_CT) {
             tft.drawString("100%", text_x, chart_start_y + 4);
             int mid_y = chart_start_y + ((split_y - chart_start_y) / 2);
             tft.drawString("50%", text_x, mid_y - 6);

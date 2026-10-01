@@ -46,7 +46,10 @@ const int MAX_MACS = 185;
 //    environment; a commit copies the accumulator into the next slot.
 #define MAX_CT_BSSIDS       48  // per window / environment identity set
 #define MAX_CT_SSIDS        32  // CT-local copied strings (32 chars + NUL)
-#define MAX_CT_ENVIRONMENTS 8   // history ring depth (incl. the live one)
+#define MAX_CT_ENVIRONMENTS 10  // environment history depth (metrics records)
+#define CT_PERSIST_DEVICES  20  // persistent-device table capacity
+#define CT_PEND_SLOTS       192 // seen-once MAC pending pool capacity
+#define CT_PERSIST_SSIDS    4   // probed-SSID copies per persistent record
 
 // Sticky truncation bits for CtEnvironment::flags — set ONLY when insertion
 // of a genuinely new identity fails because its fixed set is full.
@@ -57,6 +60,88 @@ const int MAX_MACS = 185;
 // at commit; never present on the open accumulator (acc.flags holds only
 // truncation bits).
 #define CT_FLAG_CLASS_T     0x04
+// Persistent-device record flags (CtPersistDevice::flags / CtPendMac::flags):
+// bit0 = device has AP/BSSID evidence, bit1 = device has probe/station
+// evidence, bit2 = more than 8 distinct environments were encountered after
+// env_seen[] was full (list preserved, count continues).
+#define CT_PFLAG_AP         0x01
+#define CT_PFLAG_PROBE      0x02
+#define CT_PFLAG_ENV_OVF    0x04
+
+// ---- Immutable committed-environment metrics record ----
+// Written once by ct_commit_segment() and never modified afterwards.
+// Population/SSID mean & dispersion are the FINAL horizon-EWMA values of the
+// segment (alpha = 1/32, seeded exactly on the segment's first valid window;
+// the committing window is included). CV is derived at render time as
+// sigma/mean (0 when mean is 0) — deliberately not stored. Byte traffic is
+// per-window frame bytes (same sig_len interpretation as ApRecord traffic
+// accounting) in Q8.8 KiB (bytes >> 2). Duration is derived as
+// last_seen - first_seen; the stamps are kept so environment timelines can
+// be correlated with persistent-device stamps.
+struct CtEnvRecord {
+  uint32_t first_seen;        // millis stamp of the segment's first valid window
+  uint32_t last_seen;         // millis stamp of its last valid window
+  uint32_t byte_mean_q8kib;   // horizon EWMA of per-window bytes, KiB Q8.8
+  uint32_t byte_std_q8kib;    // isqrt of the byte-variance EWMA, KiB Q8.8
+  uint16_t mu_b_q8;           // final horizon EWMA mean of B
+  uint16_t sig_b_q8;          // isqrt of the final horizon EWMA variance of B
+  uint16_t mu_s_q8;           // final horizon EWMA mean of S
+  uint16_t sig_s_q8;          // isqrt of the final horizon EWMA variance of S
+  uint16_t env_id;            // = env_seq at commit
+  uint16_t window_count;      // valid windows folded into this environment
+  uint8_t  flags;             // CLASS_T + inherited acc truncation bits
+  uint8_t  reserved;
+};  // 32 B (static-asserted below)
+static_assert(sizeof(CtEnvRecord) == 32, "FATAL: CtEnvRecord layout drifted");
+
+// ---- Persistent-device record (CT-owned, fully self-contained) ----
+// No field references any external tracker slot, pool node, or cache entry;
+// every string/stamp is a CT-local copy taken under the commit fence.
+struct CtPersistDevice {
+  uint32_t first_seen;        // earliest known observation stamp (see commit)
+  uint32_t last_seen;         // most recent observation stamp
+  uint16_t env_seen[8];       // FIRST 8 distinct committed env ids, insert-once,
+                              // never overwritten once full
+  uint8_t  mac[6];            // exact MAC identity (AP BSSID or station MAC)
+  uint8_t  oui[3];            // first 3 MAC bytes (locally-administered for
+                              // randomized MACs — descriptive only)
+  uint8_t  country[3];        // 802.11d country IE copy (AP evidence only)
+  uint8_t  flags;             // CT_PFLAG_AP | CT_PFLAG_PROBE | CT_PFLAG_ENV_OVF
+  uint8_t  env_count;         // distinct committed envs, saturating u8; exact
+                              // dedup is only possible against the stored 8
+  char     vendor[28];        // copied from probeList vendor when available
+                              // (AP rows: empty; OUI is stored for resolution)
+  char     ssid_hist[CT_PERSIST_SSIDS][33]; // slot 0 = first SSID ever (frozen
+                              // at promotion); slots 1..3 = latest distinct
+                              // (dedup'd against all 4; empty = none stored)
+};  // 200 B (static-asserted below)
+static_assert(sizeof(CtPersistDevice) == 200,
+              "FATAL: CtPersistDevice layout drifted");
+
+struct CtPersistTable {
+  uint8_t          count;     // occupied rows (<= CT_PERSIST_DEVICES)
+  CtPersistDevice  dev[CT_PERSIST_DEVICES];
+};
+
+// ---- Seen-once pending pool ----
+// Keyed by EXACT MAC. Holds devices evidenced in exactly one committed
+// environment, awaiting a second distinct environment. Carries the first
+// observation stamp and first env id so promotion initializes the persistent
+// record WITHOUT consulting the environment ring (the pending device may
+// outlive the ring's depth). Bounded: LRU eviction by first_env_id (ties ->
+// lowest index); eviction is false-negative-only by construction.
+struct CtPendMac {
+  uint32_t first_seen;        // earliest observation stamp at first evidence
+  uint16_t first_env_id;      // env id of the first evidencing environment
+  uint8_t  mac[6];            // exact MAC identity
+  uint8_t  flags;             // CT_PFLAG_AP / CT_PFLAG_PROBE of first evidence
+};  // 16 B (static-asserted below)
+static_assert(sizeof(CtPendMac) == 16, "FATAL: CtPendMac layout drifted");
+
+struct CtPendPool {
+  uint8_t    count;           // occupied entries (<= CT_PEND_SLOTS)
+  CtPendMac  e[CT_PEND_SLOTS];
+};
 
 struct CtEnvironment {
   uint8_t  bssid[MAX_CT_BSSIDS][6]; // exact BSSID identities
@@ -72,18 +157,22 @@ struct CtEnvironment {
 };  // 1,360 B, no padding (verified: host g++ layout check)
 
 struct CTState {
-  CtEnvironment hist[MAX_CT_ENVIRONMENTS]; // ring; hist[current_idx] = live env
+  CtEnvRecord hist[MAX_CT_ENVIRONMENTS]; // immutable committed-environment
+                                         // metrics; hist[current_idx] = newest
   CtEnvironment acc;                // sole uncommitted accumulator (window/
                                     // candidate shared record per the design
-                                    // contract; commit copies acc -> next slot)
-  uint16_t current_idx;             // ring index of the live committed environment
+                                    // contract; commit copies metrics into the
+                                    // next hist slot)
+  uint16_t current_idx;             // hist index of the newest committed env
   uint16_t env_seq;                 // next environment number (E01, E02, ...)
   uint8_t  candidate_active;        // accumulator is building a candidate
   uint8_t  phase;                   // STABLE / CANDIDATE (segmentation state)
   uint8_t  reserved[2];
-};  // 12,248 B — fits the union member with 2,552 B headroom (acc added by
-    // explicit approval 2026-09-29: completes the described design contract,
-    // zero SRAM delta, union boundary unchanged)
+  CtPersistTable persist;           // promoted persistent devices (owned state)
+  CtPendPool   pend;                // seen-once pending pool (owned state)
+};  // 8,768 B — fits the union member with headroom to spare (the union is
+    // still sized by MacRecord[185] = 14,800 B; the static_assert below
+    // keeps guarding the boundary)
 
 struct BssidCacheEntry {
     uint32_t last_seen; // 4 bytes (Largest first)
