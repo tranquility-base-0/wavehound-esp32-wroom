@@ -114,8 +114,10 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
 
         // ==========================================
         // ZONE 3 (Right 290-435): LOG/LINEAR SCALE
+        // (chart-bearing modes only — CT has no scale control; its traffic
+        // pane is always linear absolute bytes, so taps there do nothing)
         // ==========================================
-        else if (t_x > 290 && t_x <= 435) {
+        else if (currentRadioMode != RADIO_CT && t_x > 290 && t_x <= 435) {
           tft.fillRect(293, 299, 139, 17, TFT_BLACK);
           useLogScale = !useLogScale;
           drawChartFooter();

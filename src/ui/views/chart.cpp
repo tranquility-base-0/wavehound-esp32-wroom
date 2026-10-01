@@ -153,15 +153,19 @@ void drawChartFooter() {
       }
 
       // ==========================================
-      // ZONE 3: SCALE MODE (Center X = 362)
+      // ZONE 3: SCALE MODE (Center X = 362) — drawn for the chart-bearing
+      // modes only; CT's footer has no scale control (its traffic pane is
+      // always linear absolute bytes) and PCAP draws its unified label.
       // ==========================================
-      tft.drawRoundRect(292, 302, 141, 17, 3, TFT_WHITE);
+      if (currentRadioMode != RADIO_CT) {
+        tft.drawRoundRect(292, 302, 141, 17, 3, TFT_WHITE);
 
-      if (useLogScale) {
-        tft.setTextColor(TFT_YELLOW);
-        tft.drawString("SCALE: LOG", 362, 309);
-      } else {
-        tft.drawString("SCALE: LIN", 362, 309);
+        if (useLogScale) {
+          tft.setTextColor(TFT_YELLOW);
+          tft.drawString("SCALE: LOG", 362, 309);
+        } else {
+          tft.drawString("SCALE: LIN", 362, 309);
+        }
       }
   } else {
       // PCAP gets a clean, unified label instead of useless sort buttons
