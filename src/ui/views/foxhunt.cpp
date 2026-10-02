@@ -85,7 +85,7 @@ void drawFoxhuntScreen() {
     // ==========================================
 
     // 1. HEADER (static)
-    tft.fillRect(0, 0, 480, 30,
+    tft.fillRect(0, 0, SCREEN_W, 30,
                  (currentRadioMode == RADIO_BLE) ? TFT_PURPLE : TFT_RED);
     tft.setTextColor(TFT_WHITE);
     tft.setTextDatum(MC_DATUM);
@@ -93,7 +93,7 @@ void drawFoxhuntScreen() {
     const char* huntLabel = "WIFI FOXHUNT";
     if (currentRadioMode == RADIO_BLE) huntLabel = "BLE FOXHUNT";
     else if (currentRadioMode == RADIO_AP) huntLabel = "AP FOXHUNT";
-    tft.drawString(huntLabel, 240, 15);
+    tft.drawString(huntLabel, SCREEN_W / 2, 15);
 
     // 2. TARGET MAC (static)
     tft.setFreeFont(&UbuntuMono_Regular9pt7b);
@@ -104,26 +104,26 @@ void drawFoxhuntScreen() {
              foxhunt_target_mac[0], foxhunt_target_mac[1],
              foxhunt_target_mac[2], foxhunt_target_mac[3],
              foxhunt_target_mac[4], foxhunt_target_mac[5]);
-    tft.drawString(targetStr, 240, 40);
+    tft.drawString(targetStr, SCREEN_W / 2, 40);
 
     // 3. VENDOR (static, truncated to prevent width overflow)
     tft.setTextColor(TFT_LIGHTGREY);
     char safeVendor[21];
     strncpy(safeVendor, foxhunt_target_vendor, 20);
     safeVendor[20] = '\0';
-    tft.drawString(safeVendor, 240, 58); // Nudged up slightly for perfect spacing
+    tft.drawString(safeVendor, SCREEN_W / 2, 58); // Nudged up slightly for perfect spacing
 
     // 4. TARGET CHANNEL (Replaces the phantom "SIGNAL" label)
     if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP) {
         tft.setTextColor(TFT_ORANGE);
         char chStr[16];
         snprintf(chStr, sizeof(chStr), "CH: %02d", target_channel);
-        tft.drawString(chStr, 240, 76);
+        tft.drawString(chStr, SCREEN_W / 2, 76);
     }
 
     // 6. FOOTER (static)
-    tft.drawLine(0, 285, 480, 285, TFT_WHITE);
-    tft.drawRoundRect(190, 292, 100, 24, 3, TFT_RED);
+    tft.drawLine(0, 285, SCREEN_W, 285, TFT_WHITE);
+    tft.drawRoundRect(FOXHUNT_ABORT_BTN.x, FOXHUNT_ABORT_BTN.y, FOXHUNT_ABORT_BTN.w, FOXHUNT_ABORT_BTN.h, 3, TFT_RED);
     tft.setTextColor(TFT_WHITE);
     tft.setFreeFont(&UbuntuMono_Regular9pt7b);
     tft.setTextDatum(MC_DATUM);
@@ -189,7 +189,7 @@ void updateFoxhuntRadar() {
 
         // 1. RSSI VALUE — Massive Font (owns Y=88 to Y=132)
         if (current_display_val != last_displayed_rssi) {
-            tft.fillRect(0, 88, 480, 44, TFT_BLACK); // Expanded clear box for giant text
+            tft.fillRect(0, 88, SCREEN_W, 44, TFT_BLACK); // Expanded clear box for giant text
             tft.setTextDatum(MC_DATUM);
             tft.setFreeFont(&UbuntuMono_B9pt7b);
 
@@ -203,7 +203,7 @@ void updateFoxhuntRadar() {
 
             char rssiStr[32];
             snprintf(rssiStr, sizeof(rssiStr), "%d dBm", current_display_val);
-            tft.drawString(rssiStr, 240, 110);
+            tft.drawString(rssiStr, SCREEN_W / 2, 110);
 
             // THE RESET: Crucial to prevent UI corruption!
             tft.setTextSize(1);
@@ -217,7 +217,7 @@ void updateFoxhuntRadar() {
         if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_BLE) {
             if (foxhunt_rssi_min != last_drawn_min || foxhunt_rssi_max != last_drawn_max) {
 
-                tft.fillRect(0, 135, 480, 60, TFT_BLACK); // Clean wipe
+                tft.fillRect(0, 135, SCREEN_W, 60, TFT_BLACK); // Clean wipe
                 tft.setFreeFont(&UbuntuMono_Regular9pt7b);
                 tft.setTextDatum(MC_DATUM);
 
@@ -225,7 +225,7 @@ void updateFoxhuntRadar() {
                 snprintf(boundStr, sizeof(boundStr),
                          "FLOOR: %d dBm  |  CEILING: %d dBm", foxhunt_rssi_min, foxhunt_rssi_max);
                 tft.setTextColor(TFT_GREEN);
-                tft.drawString(boundStr, 240, 165); // Centered vertically in the 60px wipe box
+                tft.drawString(boundStr, SCREEN_W / 2, 165); // Centered vertically in the 60px wipe box
 
                 tft.setTextDatum(TL_DATUM);
 

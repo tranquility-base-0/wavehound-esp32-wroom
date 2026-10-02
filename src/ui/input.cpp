@@ -61,7 +61,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         // ==========================================
         // ZONE 1 (Left 0-145): SORT METRIC
         // ==========================================
-        if (t_x < 145) {
+        if (t_x < CHART_FOOT_TOUCH_X1) {
           // 1. Wipe the inside
           tft.fillRect(3, 299, 139, 17, TFT_BLACK);
 
@@ -105,7 +105,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         // ==========================================
         // ZONE 2 (Center 145-290): SORT DIRECTION
         // ==========================================
-        else if (t_x >= 145 && t_x <= 290) {
+        else if (t_x >= CHART_FOOT_TOUCH_X1 && t_x <= CHART_FOOT_TOUCH_X2) {
           tft.fillRect(148, 299, 139, 17, TFT_BLACK);
           sort_descending = !sort_descending;
           drawChartFooter();
@@ -117,7 +117,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         // (chart-bearing modes only — CT has no scale control; its traffic
         // pane is always linear absolute bytes, so taps there do nothing)
         // ==========================================
-        else if (currentRadioMode != RADIO_CT && t_x > 290 && t_x <= 435) {
+        else if (currentRadioMode != RADIO_CT && t_x > CHART_FOOT_TOUCH_X2 && t_x <= CHART_FOOT_TOUCH_X3) {
           tft.fillRect(293, 299, 139, 17, TFT_BLACK);
           useLogScale = !useLogScale;
           drawChartFooter();
@@ -132,7 +132,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
     else if (currentState == SCREEN_MENU) {
 
       // FOXHUNT BUTTON TOUCH ZONE
-      if (t_x > 50 && t_x < 250 && t_y > 90 && t_y < 130) {
+      if (uiHit(MENU_BTN_FOXHUNT, t_x, t_y)) {
 
           bool foxhunt_available = false;
           if (currentRadioMode == RADIO_WIFI) foxhunt_available = (target_locked && sessionMacCount > 0);
@@ -147,14 +147,14 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           delay(400);
       }
       // Probe Request Tracker Button
-      else if (t_x > 300 && t_x < 450 && t_y > 140 && t_y < 180) {
+      else if (uiHit(MENU_BTN_PROBES, t_x, t_y)) {
         currentState = SCREEN_PROBE_TRACKER;
         probe_current_page = 0;
         drawProbeTracker();
         delay(300);
       }
       // AP Scanner / CH Select Button
-      else if (t_x > 50 && t_x < 250 && t_y > 190 && t_y < 230) {
+      else if (uiHit(MENU_BTN_SELECT_AP, t_x, t_y)) {
         if (currentRadioMode == RADIO_WIFI) {
           currentState = SCREEN_AP_SCAN;
           drawApScanner();
@@ -193,7 +193,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       // UNIFIED SNIFFED DEVICES / LEAK LIST BUTTON
       // ==========================================
-      else if (t_x > 50 && t_x < 250 && t_y > 240 && t_y < 280) {
+      else if (uiHit(MENU_BTN_SNIFFLIST, t_x, t_y)) {
         currentState = SCREEN_DEVICE_LIST;
         device_current_page = 0;
 
@@ -207,7 +207,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       // RADIO MODE TOGGLE TOUCH LOGIC (X:300-450, Y:190-230)
       // ==========================================
-      else if (t_x > 300 && t_x < 450 && t_y > 190 && t_y < 230) {
+      else if (uiHit(MENU_BTN_MODE, t_x, t_y)) {
 
         target_locked = false;
         memset(traffic_history, 0, sizeof(traffic_history));
@@ -225,33 +225,33 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         tft.setTextDatum(MC_DATUM);
 
         if (nextMode == RADIO_WIFI) {
-          tft.fillRect(300, 190, 150, 40, TFT_BLUE);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_BLUE);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: WI-FI", 375, 210);
         } else if (nextMode == RADIO_BLE) {
-          tft.fillRect(300, 190, 150, 40, TFT_PURPLE);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_PURPLE);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: BLE", 375, 210);
         } else if (nextMode == RADIO_AP) {
-          tft.fillRect(300, 190, 150, 40, TFT_DARKGREEN);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_DARKGREEN);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: NETWORKS", 375, 210);
         } else if (nextMode == RADIO_CHANNELS) {
-          tft.fillRect(300, 190, 150, 40, TFT_ORANGE);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_ORANGE);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: CHANNELS", 375, 210);
         } else if (nextMode == RADIO_PCAP) {
-          tft.fillRect(300, 190, 150, 40, TFT_MAROON);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_MAROON);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: PCAP", 375, 210);
         } else if (nextMode == RADIO_CT) {
-          tft.fillRect(300, 190, 150, 40, TFT_NAVY);
-          tft.drawRect(300, 190, 150, 40, TFT_WHITE);
+          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_NAVY);
+          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
           tft.setTextColor(TFT_WHITE);
           tft.drawString("MODE: CT", 375, 210);
         }
@@ -300,7 +300,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       // EXIT BUTTON TOUCH LOGIC
       // ==========================================
-      else if (t_x > 300 && t_x < 450 && t_y > 240 && t_y < 280) {
+      else if (uiHit(MENU_BTN_EXIT, t_x, t_y)) {
         currentState = SCREEN_CHART;
         tft.fillScreen(TFT_BLACK);
         drawChartHeader();
@@ -343,7 +343,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
 
       // HEADER TOUCH (SORT CONTROLS)
       if (t_y <= 30) {
-        if (t_x >= 275 && t_x < 410) {
+        if (t_x >= LIST_SORT_BTN.x && t_x < LIST_DIR_BTN.x) {
           if (currentProbeSortMode == PROBE_SORT_HITS) currentProbeSortMode = PROBE_SORT_DIST;
           else if (currentProbeSortMode == PROBE_SORT_DIST) currentProbeSortMode = PROBE_SORT_SSIDS;
           else if (currentProbeSortMode == PROBE_SORT_SSIDS) currentProbeSortMode = PROBE_SORT_AGE;
@@ -353,7 +353,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           drawProbeTracker();
           delay(200);
         }
-        else if (t_x >= 410) {
+        else if (t_x >= LIST_DIR_BTN.x) {
           probe_sort_descending = !probe_sort_descending;
           probe_current_page = 0;
           drawProbeTracker();
@@ -363,17 +363,17 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
 
       // FOOTER TOUCH (NAVIGATION)
       else if (t_y > 285) {
-        if (t_x < 160 && probe_current_page > 0) {
+        if (t_x < SCREEN_W / 3 && probe_current_page > 0) {
           probe_current_page--;
           drawProbeTracker();
           delay(250);
         }
-        else if (t_x > 320 && ((probe_current_page + 1) * PROBES_PER_PAGE) < total_sniffed_probes) {
+        else if (t_x > SCREEN_W * 2 / 3 && ((probe_current_page + 1) * PROBES_PER_PAGE) < total_sniffed_probes) {
           probe_current_page++;
           drawProbeTracker();
           delay(250);
         }
-        else if (t_x >= 160 && t_x <= 320) {
+        else if (t_x >= SCREEN_W / 3 && t_x <= SCREEN_W * 2 / 3) {
           currentState = SCREEN_MENU;
           drawMenu();
           delay(300);
@@ -458,17 +458,17 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       else if (t_y >= 290) {
         int total_aps = WiFi.scanComplete();
 
-        if (t_x < 160 && ap_current_page > 0) {
+        if (t_x < SCREEN_W / 3 && ap_current_page > 0) {
           ap_current_page--;
           drawApScanner();
           delay(250);
         }
-        else if (t_x > 320 && ((ap_current_page + 1) * APS_PER_PAGE) < total_aps) {
+        else if (t_x > SCREEN_W * 2 / 3 && ((ap_current_page + 1) * APS_PER_PAGE) < total_aps) {
           ap_current_page++;
           drawApScanner();
           delay(250);
         }
-        else if (t_x >= 160 && t_x <= 320) {
+        else if (t_x >= SCREEN_W / 3 && t_x <= SCREEN_W * 2 / 3) {
           currentState = SCREEN_MENU;
           ap_current_page = 0;
           drawMenu();
@@ -481,7 +481,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
     // 5. FOXHUNT SCREEN TOUCH LOGIC
     // ==========================================
     else if (currentState == SCREEN_FOXHUNT) {
-      if (t_x > 190 && t_x < 290 && t_y > 290) {
+      if (t_x > FOXHUNT_ABORT_BTN.x && t_x < FOXHUNT_ABORT_BTN.x + FOXHUNT_ABORT_BTN.w && t_y > FOXHUNT_ABORT_BTN.y - 2 /* deliberate 2px top expansion, unbounded below */) {
         is_foxhunting = false;
         is_selecting_target = false;
         foxhunt_bounds_seeded = false;
@@ -506,7 +506,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       if (t_y <= 30) {
         // ZONE 1: TOGGLE SORT METRIC (X: 275 to 405)
-        if (t_x >= 275 && t_x < 405) {
+        if (t_x >= LIST_SORT_BTN.x && t_x < LIST_SORT_BTN.x + LIST_SORT_BTN.w) {
 
           if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP) {
             if (currentSortMode == SORT_TOTAL) currentSortMode = SORT_TX;
@@ -547,7 +547,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           delay(200);
         }
         // ZONE 2: TOGGLE SORT DIRECTION (X: 410 to 480)
-        else if (t_x >= 410) {
+        else if (t_x >= LIST_DIR_BTN.x) {
           sort_descending = !sort_descending;
           device_current_page = 0;
 
@@ -563,7 +563,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // ==========================================
       // B. FOOTER NAVIGATION (Y >= 294)
       // ==========================================
-      else if (t_y >= 294) {
+      else if (t_y >= LIST_FOOTER_TOP) {
         // --- PAGINATION MATH ---
         // PCAP uses the shared dynamic pagination (rendered-height packing) so
         // the NEXT gate matches the drawn NEXT -> button exactly. Other modes
@@ -607,16 +607,12 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
           delay(300);
         }
       }
-
-      // ==========================================
-      // C. LIST ROW SELECTION (The "Hot" Devices)
-      // ==========================================
-      else if (t_y >= 62 && t_y < 294) {
+      else if (t_y >= DEV_LIST_TOP && t_y < LIST_FOOTER_TOP) {
 
         // --- ADDED PCAP GUARD (No foxhunting for leaks yet) ---
         if (currentRadioMode == RADIO_PCAP) return false;
 
-        int tapped_screen_row = (t_y - 62) / 33;
+        int tapped_screen_row = (t_y - DEV_LIST_TOP) / DEV_LIST_ROW_H;
         int total_devices = 0;
 
         if (currentRadioMode == RADIO_WIFI) total_devices = sessionMacCount;

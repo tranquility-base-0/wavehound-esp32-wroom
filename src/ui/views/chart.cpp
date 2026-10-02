@@ -35,7 +35,7 @@ void drawTelemetryHeader(uint32_t leaks, uint32_t enqueued, uint32_t attempted) 
 void drawChartHeader() {
   // 1. Gate the horizontal separator line so it doesn't cut through the PCAP terminal
   if (currentRadioMode != RADIO_PCAP) {
-    tft.drawLine(0, HEADER_HEIGHT - 8, 480, HEADER_HEIGHT - 8, COLOR_HOT_CHEST);
+    tft.drawLine(0, HEADER_HEIGHT - 8, SCREEN_W, HEADER_HEIGHT - 8, COLOR_HOT_CHEST);
   }
 
   // MENU BUTTON
@@ -93,7 +93,7 @@ void drawChartHeader() {
   tft.drawString(bannerStr, 5, 1);
 }
 void drawChartFooter() {
-  tft.fillRect(0, 296, 480, 24, TFT_BLACK);
+  tft.fillRect(0, SCREEN_H - 24, SCREEN_W, 24, TFT_BLACK);
 
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
   tft.setTextColor(TFT_WHITE);
@@ -103,7 +103,7 @@ void drawChartFooter() {
       // ==========================================
       // ZONE 1: SORT METRIC (Center X = 72)
       // ==========================================
-      tft.drawRoundRect(2, 302, 141, 17, 3, TFT_WHITE);
+      tft.drawRoundRect(CHART_FOOT_SORT_BTN.x, CHART_FOOT_SORT_BTN.y, CHART_FOOT_SORT_BTN.w, CHART_FOOT_SORT_BTN.h, 3, TFT_WHITE);
 
       char metricStr[32] = "SORT: ERR";
 
@@ -142,7 +142,7 @@ void drawChartFooter() {
       // ==========================================
       // ZONE 2: SORT DIRECTION (Center X = 217)
       // ==========================================
-      tft.drawRoundRect(147, 302, 141, 17, 3, TFT_WHITE);
+      tft.drawRoundRect(CHART_FOOT_ORDER_BTN.x, CHART_FOOT_ORDER_BTN.y, CHART_FOOT_ORDER_BTN.w, CHART_FOOT_ORDER_BTN.h, 3, TFT_WHITE);
 
       if (sort_descending) {
         tft.drawString("ORDER: DESC", 217, 309);
@@ -158,7 +158,7 @@ void drawChartFooter() {
       // always linear absolute bytes) and PCAP draws its unified label.
       // ==========================================
       if (currentRadioMode != RADIO_CT) {
-        tft.drawRoundRect(292, 302, 141, 17, 3, TFT_WHITE);
+        tft.drawRoundRect(CHART_FOOT_SCALE_BTN.x, CHART_FOOT_SCALE_BTN.y, CHART_FOOT_SCALE_BTN.w, CHART_FOOT_SCALE_BTN.h, 3, TFT_WHITE);
 
         if (useLogScale) {
           tft.setTextColor(TFT_YELLOW);
@@ -218,7 +218,7 @@ void drawPersistentTopN() {
     // 2. Force a full block wipe ONLY when changing radio modes
     bool forceRedraw = (currentRadioMode != lastRadioMode) || force_ui_refresh;
     if (forceRedraw) {
-        tft.fillRect(0, 18, 480, HEADER_HEIGHT - 27, TFT_BLACK);
+        tft.fillRect(0, 18, SCREEN_W, HEADER_HEIGHT - 27, TFT_BLACK);
         for(int i = 0; i < 10; i++) {
             lastLabels[i][0] = '\0'; // Clear the cache array
         }
@@ -349,7 +349,7 @@ void drawTemporalLegend() {
     // 2. DRAW THE MAIN 6-DEVICE LEGEND (Now in the bottom position)
     int start_y = HEADER_HEIGHT - 6;
     // Wipe exactly the space between the header line and the chart
-    tft.fillRect(0, start_y, 480, chart_start_y - start_y, TFT_BLACK);
+    tft.fillRect(0, start_y, SCREEN_W, chart_start_y - start_y, TFT_BLACK);
 
     tft.setFreeFont(&UbuntuMono_Regular11pt7b);
 
@@ -410,7 +410,7 @@ void drawTemporalLegend() {
     }
 
     // Draw the white separator line between the new bottom legend and the waterfall chart
-    tft.drawLine(0, chart_start_y, 480, chart_start_y, COLOR_HOT_CHEST);
+    tft.drawLine(0, chart_start_y, SCREEN_W, chart_start_y, COLOR_HOT_CHEST);
 }
 
 // ============================================================================
@@ -507,8 +507,8 @@ static void drawCtScreen() {
                  (ctState.persist.count != last_persist_count);
 
     // ---- Timeline bar (y285..295): E=DARKGREY, T=RED, open=black ----
-    tft.fillRect(0, CT_BAR_Y, 480, CT_BAR_H, TFT_BLACK);
-    tft.drawRect(0, CT_BAR_Y, 480, CT_BAR_H, TFT_WHITE);
+    tft.fillRect(0, CT_BAR_Y, SCREEN_W, CT_BAR_H, TFT_BLACK);
+    tft.drawRect(0, CT_BAR_Y, SCREEN_W, CT_BAR_H, TFT_WHITE);
 
     // Committed envs, newest->oldest, straight off the hist ring.
     const CtEnvRecord* envs[MAX_CT_ENVIRONMENTS];
@@ -530,7 +530,7 @@ static void drawCtScreen() {
         tft.setTextDatum(TL_DATUM);
         t0 = total_ms = 0;
     } else {
-        // x boundaries accumulate left->right: width_i = span_i*480/total.
+        // x boundaries accumulate left->right: width_i = span_i*SCREEN_W/total.
         // Spans come off the first_seen chain (fs_i -> fs_{i+1}); the last
         // committed segment ends at acc.first_seen, open segment fills the
         // rest to now. Floor-rounding slack is absorbed by the open segment.
@@ -547,7 +547,7 @@ static void drawCtScreen() {
                      envs[i]->env_id);
             int tw = strlen(lb) * 6;
             int min_w = tw + 2;
-            int w = (int)(((uint64_t)span * 480) / total_ms);
+            int w = (int)(((uint64_t)span * SCREEN_W) / total_ms);
             if (w < min_w) w = min_w;
             if (w > 0) {
                 uint16_t fill = (envs[i]->flags & CT_FLAG_CLASS_T) ? TFT_RED : TFT_DARKGREY;
@@ -558,21 +558,21 @@ static void drawCtScreen() {
                 tft.drawString(lb, xcur + w / 2, CT_BAR_Y + CT_BAR_H / 2);
             }
             xcur += w;
-            if (xcur >= 480) { xcur = 480; break; }
+            if (xcur >= SCREEN_W) { xcur = SCREEN_W; break; }
         }
         // Open (uncommitted) segment: black inside the white outline.
-        if (xcur < 480 && ctState.acc.first_seen != 0) {
+        if (xcur < SCREEN_W && ctState.acc.first_seen != 0) {
             char lb[8];
             snprintf(lb, sizeof(lb), "E%u", ctState.env_seq);
             tft.setTextColor(TFT_WHITE);
-            tft.drawString(lb, xcur + (480 - xcur) / 2, CT_BAR_Y + CT_BAR_H / 2);
+            tft.drawString(lb, xcur + (SCREEN_W - xcur) / 2, CT_BAR_Y + CT_BAR_H / 2);
         }
         tft.setTextDatum(TL_DATUM);
     }
 
     // SEP3: the modes' shared split_y line (y263). The bottom-pane engine
     // only draws it on a rescale, so CT keeps it persistent here.
-    tft.drawLine(0, CT_SEP3_Y, 480, CT_SEP3_Y, COLOR_HOT_CHEST);
+    tft.drawLine(0, CT_SEP3_Y, SCREEN_W, CT_SEP3_Y, COLOR_HOT_CHEST);
 
     // ---- Lists: 1 Hz or dirty ----
     if (!dirty && (now_ms - last_lists_ms) < 1000) return;
@@ -580,12 +580,12 @@ static void drawCtScreen() {
     last_env_seq = ctState.env_seq;
     last_persist_count = ctState.persist.count;
 
-    tft.fillRect(0, CT_PLIST_Y, 480, CT_ENV_Y + 6 * CT_ENV_ROWH - CT_PLIST_Y, TFT_BLACK);
+    tft.fillRect(0, CT_PLIST_Y, SCREEN_W, CT_ENV_Y + 6 * CT_ENV_ROWH - CT_PLIST_Y, TFT_BLACK);
 
     // Band separators (drawn after the 1 Hz list clear; SEP3/split_y at y263
     // lives below this clear and is drawn by the shared bottom-pane engine).
-    tft.drawLine(0, CT_SEP1_Y, 480, CT_SEP1_Y, COLOR_HOT_CHEST);
-    tft.drawLine(0, CT_SEP2_Y, 480, CT_SEP2_Y, COLOR_HOT_CHEST);
+    tft.drawLine(0, CT_SEP1_Y, SCREEN_W, CT_SEP1_Y, COLOR_HOT_CHEST);
+    tft.drawLine(0, CT_SEP2_Y, SCREEN_W, CT_SEP2_Y, COLOR_HOT_CHEST);
 
     // ---- Persistent-device list (top 8 by last_seen, single column) ----
     uint8_t ord[CT_PERSIST_DEVICES];
@@ -712,10 +712,10 @@ void drawWaterfallChart() {
     int clear_height = CHART_BOTTOM - clear_start_y;
 
     // Pure wipe logic (using dynamic clear_start_y and clear_height)
-    if (current_x + ERASER_WIDTH <= 480) {
+    if (current_x + ERASER_WIDTH <= SCREEN_W) {
         tft.fillRect(current_x, clear_start_y, ERASER_WIDTH, clear_height, TFT_BLACK);
     } else {
-        int w1 = 480 - current_x;
+        int w1 = SCREEN_W - current_x;
         tft.fillRect(current_x, clear_start_y, w1, clear_height, TFT_BLACK);
         tft.fillRect(0, clear_start_y, ERASER_WIDTH - w1, clear_height, TFT_BLACK);
     }
@@ -816,7 +816,7 @@ void drawWaterfallChart() {
             last_rendered_leak_timestamp = terminal_history[0].meta.timestamp;
 
             int terminal_start_y = 26;
-            tft.fillRect(0, terminal_start_y, 480, split_y - terminal_start_y - 1, TFT_BLACK);
+            tft.fillRect(0, terminal_start_y, SCREEN_W, split_y - terminal_start_y - 1, TFT_BLACK);
 
             tft.setFreeFont(&UbuntuMono_Regular8pt7b);
             tft.setTextDatum(TL_DATUM);
@@ -986,7 +986,7 @@ void drawWaterfallChart() {
                     tft.drawString(lineBuf, 4, cursor_y);
                     cursor_y += 14;
                 }
-                tft.drawLine(0, cursor_y + 2, 480, cursor_y + 2, COLOR_HOT_CHEST);
+                tft.drawLine(0, cursor_y + 2, SCREEN_W, cursor_y + 2, COLOR_HOT_CHEST);
                 cursor_y += 5;
             }
         }
@@ -1049,8 +1049,8 @@ void drawWaterfallChart() {
     }
 
     if (did_rescale) {
-        tft.fillRect(0, split_y + 1, 480, CHART_BOTTOM - split_y, TFT_BLACK);
-        tft.drawLine(0, split_y, 480, split_y, COLOR_HOT_CHEST);
+        tft.fillRect(0, split_y + 1, SCREEN_W, CHART_BOTTOM - split_y, TFT_BLACK);
+        tft.drawLine(0, split_y, SCREEN_W, split_y, COLOR_HOT_CHEST);
 
         for (int c = 0; c < 240; c++) {
             int px = c * 2;
@@ -1081,19 +1081,19 @@ void drawWaterfallChart() {
     // Gate the sweeping vertical lines to ONLY draw in the area below clear_start_y
     tft.drawFastVLine(current_x + 2, clear_start_y, clear_height, COLOR_HOT_CHEST);
 
-    if (current_x + ERASER_WIDTH <= 480) {
+    if (current_x + ERASER_WIDTH <= SCREEN_W) {
         tft.drawFastVLine(current_x + ERASER_WIDTH - 1, clear_start_y, clear_height, COLOR_HOT_CHEST);
         tft.drawFastHLine(current_x, split_y, ERASER_WIDTH, COLOR_HOT_CHEST);
     } else {
-        int w1 = 480 - current_x;
+        int w1 = SCREEN_W - current_x;
         tft.drawFastVLine(ERASER_WIDTH - w1 - 1, clear_start_y, clear_height, COLOR_HOT_CHEST);
         tft.drawFastHLine(current_x, split_y, w1, COLOR_HOT_CHEST);
         tft.drawFastHLine(0, split_y, ERASER_WIDTH - w1, COLOR_HOT_CHEST);
     }
 
-    if (current_x <= 480 - ERASER_WIDTH || did_rescale) {
+    if (current_x <= SCREEN_W - ERASER_WIDTH || did_rescale) {
         int text_x = current_x + 6;
-        if (text_x > 480 - 40) text_x = 480 - 40;
+        if (text_x > SCREEN_W - 40) text_x = SCREEN_W - 40;
 
         tft.setFreeFont(&UbuntuMono_Regular8pt7b);
         tft.setTextDatum(TL_DATUM);
@@ -1125,5 +1125,5 @@ void drawWaterfallChart() {
     }
 
     current_x += 2;
-    if (current_x >= 480) current_x = 0;
+    if (current_x >= SCREEN_W) current_x = 0;
 }

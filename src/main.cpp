@@ -104,6 +104,7 @@ void setup() {
   tft.init();
   tft.setTouch(calData);
   tft.setRotation(1);
+  ui_init_geometry();  // query width()/height() AFTER rotation is applied
   tft.fillScreen(TFT_BLACK);
   drawChartHeader();
   drawChartFooter();
