@@ -372,38 +372,31 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
 
         // Row -> action dispatch (matches drawMenu()'s row table).
         if (m == RADIO_WIFI) {
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
-          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) selectApAction();
-          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) scanAction();
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) foxhuntAction();
+          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) selectApAction();
           else if (uiHit(SUBMENU_BTN[4], t_x, t_y)) selectChAction();
         } else if (m == RADIO_BLE) {
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
           else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) foxhuntAction();
         } else if (m == RADIO_AP) {
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
           else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) foxhuntAction();
           else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) selectChAction();
         } else if (m == RADIO_CHANNELS) {
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) scanAction();
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
         } else if (m == RADIO_PCAP) {
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) scanAction();
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
           else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) selectChAction();
         } else { // RADIO_CT
-          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) {
-            ch_keypad_open = false;
-            currentState = SCREEN_PROBE_TRACKER;
-            probe_current_page = 0;
-            drawProbeTracker();
-            delay(300);
-          }
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
           else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
           else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction(); // RF ENVS -> CT real-time screen
-          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) scanAction();
         }
       }
       } // end not-keypad-open

@@ -79,52 +79,51 @@ void drawMenu() {
   const char *scanLabel = menu_scan_started ? "RESUME SCAN" : "START SCAN";
 
   // Row semantics per mode (rows are top-aligned, no gaps):
-  //   WIFI/AP:   FOXHUNT, SELECT AP/CH, DEVICES, SCAN, BACK
-  //   BLE:       FOXHUNT, DEVICES, SCAN, BACK
-  //   CHANNELS:  DEVICES, SCAN, BACK
-  //   PCAP:      SELECT CH, DEVICES, SCAN, BACK
-  //   CT:        PROBES, DEVICES, RF ENVS, SCAN, BACK
+  //   WIFI:   SCAN, DEVICES, FOXHUNT, SELECT AP, SELECT CH, BACK
+  //   BLE:    SCAN, DEVICES, FOXHUNT, BACK
+  //   AP:     SCAN, DEVICES, FOXHUNT, SELECT CH, BACK
+  //   CHANNELS: SCAN, CHANNELS, BACK
+  //   PCAP:   SCAN, PACKETS, SELECT CH, BACK
+  //   CT:     SCAN, DEVICES, RF ENVS, BACK
   const char *rows[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
-  bool foxEnabled = false;
+  int fox_row = -1;   // row holding FOXHUNT (may be gated on availability)
   int n_rows = 0;
   if (m == RADIO_WIFI) {
-    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
-    rows[1] = "SELECT AP";
-    rows[2] = "DEVICES";
-    rows[3] = scanLabel;
+    rows[0] = scanLabel;
+    rows[1] = "DEVICES";
+    rows[2] = "FOXHUNT"; fox_row = 2; foxEnabled = foxhunt_available;
+    rows[3] = "SELECT AP";
     rows[4] = "SELECT CH";
     n_rows = 5;
   } else if (m == RADIO_BLE) {
-    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
+    rows[0] = scanLabel;
     rows[1] = "DEVICES";
-    rows[2] = scanLabel;
+    rows[2] = "FOXHUNT"; fox_row = 2; foxEnabled = foxhunt_available;
     n_rows = 3;
   } else if (m == RADIO_AP) {
-    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
+    rows[0] = scanLabel;
     rows[1] = "DEVICES";
-    rows[2] = scanLabel;
+    rows[2] = "FOXHUNT"; fox_row = 2; foxEnabled = foxhunt_available;
     rows[3] = "SELECT CH";
     n_rows = 4;
   } else if (m == RADIO_CHANNELS) {
-    rows[0] = "DEVICES";
-    rows[1] = scanLabel;
+    rows[0] = scanLabel;
+    rows[1] = "CHANNELS";
     n_rows = 2;
   } else if (m == RADIO_PCAP) {
-    rows[0] = "DEVICES";
-    rows[1] = scanLabel;
+    rows[0] = scanLabel;
+    rows[1] = "PACKETS";
     rows[2] = "SELECT CH";
     n_rows = 3;
   } else { // RADIO_CT
-    rows[0] = "PROBES";
+    rows[0] = scanLabel;
     rows[1] = "DEVICES";
     rows[2] = "RF ENVS";
-    rows[3] = scanLabel;
-    n_rows = 4;
+    n_rows = 3;
   }
 
   for (int k = 0; k < n_rows; k++) {
-    bool en = (k == 0 && rows[0] && (m == RADIO_WIFI || m == RADIO_BLE || m == RADIO_AP))
-                  ? foxEnabled : true;
+    bool en = (k == fox_row) ? foxEnabled : true;
     drawMenuBtn(SUBMENU_BTN[k], rows[k], en);
   }
   tft.setTextDatum(TL_DATUM);
