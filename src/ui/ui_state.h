@@ -43,12 +43,20 @@ struct UiRect {
 };
 
 // Menu screen buttons (drawMenu + SCREEN_MENU touch)
-extern const UiRect MENU_BTN_FOXHUNT;    // 50,90,200,40
-extern const UiRect MENU_BTN_PROBES;     // 300,140,150,40
-extern const UiRect MENU_BTN_SELECT_AP;  // 50,190,200,40
-extern const UiRect MENU_BTN_MODE;       // 300,190,150,40
-extern const UiRect MENU_BTN_SNIFFLIST;  // 50,240,200,40
-extern const UiRect MENU_BTN_EXIT;       // 300,240,150,40
+// Two-column menu (Step 1 navigation redesign):
+//   left column  = MAIN MENU (one button per radio mode + SETTINGS)
+//   right column = the selected mode's submenu actions
+extern const UiRect MAINMENU_BTN[7];     // 0..5 = RadioMode order, 6 = SETTINGS
+extern const UiRect SUBMENU_BTN[5];      // submenu action rows (top-aligned)
+extern const UiRect KEYPAD_BTN[15];      // SELECT CH keypad: 5x3 grid inside
+                                         // the right column, below the lowest
+                                         // possible SELECT CH row; layout is
+                                         // 1-5 / 6-0 / , - <- OK X
+extern const UiRect PRESET_BTN[3];       // 4th column presets (one per row):
+                                         // 2.4GHz / 5GHz placeholder / ALL
+extern int  menu_selection;              // selected left-column entry (0..6)
+extern bool menu_scan_started;           // real-time screen entered since the
+                                         // last mode selection (START vs RESUME)
 
 // List header sort controls (drawDeviceList/drawProbeTracker + touch)
 extern const UiRect LIST_SORT_BTN;       // 275,2,130,20

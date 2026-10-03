@@ -39,7 +39,24 @@ static void forceSessionSort() {
   }
 }
 
-bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
+// --- SELECT CH keypad state (menu-local; capture stays paused while open) ---
+static bool   ch_keypad_open = false;
+static char   ch_buf[40];       // raw text: "1,6,11-13"
+static int    ch_len = 0;
+static const char *ch_err = nullptr;
+// One-press-one-key debounce: a key is accepted only on a down-edge
+// (fresh_press) AND at least KEYPAD_DEBOUNCE_MS after the previous key,
+// which also swallows single-frame touch dropouts mid-press. Holding a
+// finger therefore never generates repeats.
+static const unsigned long KEYPAD_DEBOUNCE_MS = 150;
+static unsigned long ch_last_press_ms = 0;
+
+// Redraw only the keypad echo line (called on each keypress).
+static void ch_keypad_echo() {
+  drawMenuKeypad(ch_buf, ch_err);
+}
+
+bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
   bool trigger_render = false; // 1. Create local tracking variable
 
     // ==========================================
@@ -49,6 +66,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
       // TOP RIGHT: Menu Button
       if (t_x > 400 && t_y < 40) {
         currentState = SCREEN_MENU;
+        menu_selection = (int)currentRadioMode; // submenu follows this mode
         pause_sniffing = true;
         esp_wifi_set_promiscuous(false);
         drawMenu();
@@ -127,213 +145,268 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
     }
 
     // ==========================================
-    // 2. MENU SCREEN TOUCH LOGIC
+    // 2. MENU SCREEN TOUCH LOGIC (two-column main menu + mode submenu)
+    //    Left column: one button per radio mode + SETTINGS.
+    //    Right column: the selected entry's submenu actions.
+    //    Capture stays gated for the whole visit; START/RESUME SCAN (the
+    //    last row of each submenu) leaves via the old EXIT path (gate
+    //    reopen + channel relock) to the real-time screen.
     // ==========================================
     else if (currentState == SCREEN_MENU) {
 
-      // FOXHUNT BUTTON TOUCH ZONE
-      if (uiHit(MENU_BTN_FOXHUNT, t_x, t_y)) {
+      // ---- SELECT CH KEYPAD (open state consumes all touches) ----
+      if (ch_keypad_open) {
+        bool key_accept = fresh_press &&
+                          (millis() - ch_last_press_ms) >= KEYPAD_DEBOUNCE_MS;
+        for (int k = 0; k < 15 && key_accept; k++) {
+          if (!uiHit(KEYPAD_BTN[k], t_x, t_y)) continue;
+          ch_last_press_ms = millis();  // one key per physical press
 
-          bool foxhunt_available = false;
-          if (currentRadioMode == RADIO_WIFI) foxhunt_available = (target_locked && sessionMacCount > 0);
-          else if (currentRadioMode == RADIO_BLE) foxhunt_available = (sessionBleCount > 0);
-          else if (currentRadioMode == RADIO_AP) foxhunt_available = (sessionApCount > 0);
-
-          if (!foxhunt_available) return false;
-
-          is_selecting_target = true;
-          currentState = SCREEN_DEVICE_LIST;
-          drawDeviceList();
-          delay(400);
-      }
-      // Probe Request Tracker Button
-      else if (uiHit(MENU_BTN_PROBES, t_x, t_y)) {
-        currentState = SCREEN_PROBE_TRACKER;
-        probe_current_page = 0;
-        drawProbeTracker();
-        delay(300);
-      }
-      // AP Scanner / CH Select Button
-      else if (uiHit(MENU_BTN_SELECT_AP, t_x, t_y)) {
-        if (currentRadioMode == RADIO_WIFI) {
-          currentState = SCREEN_AP_SCAN;
-          drawApScanner();
-          delay(300);
-        } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
-          if (!target_locked) {
-              target_locked = true;
-              target_channel = 1;
-          } else {
-              target_channel++;
-              if (target_channel > 13) {
-                  target_locked = false;
-                  target_channel = 0;
-              }
+          if (k <= 9) {                                 // digits 1..0
+            if (ch_len >= 40) { ch_err = "TOO LONG"; ch_keypad_echo(); break; }
+            ch_buf[ch_len++] = (char)('0' + (k == 9 ? 0 : k + 1));
+            ch_buf[ch_len] = '\0';
+            ch_err = nullptr;
+            ch_keypad_echo();
+          } else if (k == 10) {                         // ','
+            if (ch_len > 0 && ch_buf[ch_len-1] >= '0' && ch_buf[ch_len-1] <= '9') {
+              ch_buf[ch_len++] = ','; ch_buf[ch_len] = '\0';
+              ch_err = nullptr; ch_keypad_echo();
+            }
+          } else if (k == 11) {                         // '-' (one per token)
+            bool tok_dash = false;
+            for (int j = ch_len - 1; j >= 0 && ch_buf[j] != ','; j--)
+              if (ch_buf[j] == '-') { tok_dash = true; break; }
+            if (ch_len > 0 && ch_buf[ch_len-1] >= '0' && ch_buf[ch_len-1] <= '9' && !tok_dash) {
+              ch_buf[ch_len++] = '-'; ch_buf[ch_len] = '\0';
+              ch_err = nullptr; ch_keypad_echo();
+            }
+          } else if (k == 12) {                         // '<-' backspace
+            if (ch_len > 0) { ch_len--; ch_buf[ch_len] = '\0'; }
+            ch_err = nullptr;
+            ch_keypad_echo();
+          } else if (k == 13) {                         // OK: validate + apply
+            uint8_t tmp[NUM_CHANNELS];
+            uint8_t cnt = 0;
+            if (!parseChannelList(ch_buf, tmp, &cnt)) {
+              // Rejected input: the channel configuration is unchanged.
+              ch_err = "INVALID (1-13)";
+              ch_keypad_echo();
+            } else {
+              memcpy(hop_channels, tmp, cnt);
+              hop_count = cnt;
+              hop_pos = 0;
+              // NETWORKS/PCAP: the old cycle button owned target lock; a
+              // confirmed hop regime must be free to run, so unlock.
+              // WIFI: target_locked is the AP-target lock (SELECT AP) --
+              // left untouched; the regime applies when hopping resumes.
+              if (currentRadioMode != RADIO_WIFI) target_locked = false;
+              if (!target_locked)
+                esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
+              ch_keypad_open = false;
+              drawMenu();
+              delay(150);
+            }
+          } else {                                      // X: cancel, no change
+            ch_keypad_open = false;
+            drawMenu();
+            delay(150);
           }
+          break;
+        }
 
-          memset(traffic_history, 0, sizeof(traffic_history));
-          absolute_max_traffic = 10;
-          if (currentRadioMode == RADIO_PCAP) {
-            // PCAP channel re-lock: fresh telemetry session WITHOUT
-            // resetMonitorState()'s union wipes — sessionData aliases
-            // leakHistory there, so the wipe would destroy the persistent
-            // capture/alert list. Same zero set as the MENU-EXIT path.
-            // pause_sniffing stays closed until MENU-EXIT reopens it.
-            pcap_displayed_total = 0;
-            pcap_upstream_total  = 0;
-            pcap_cooldown_total  = 0;
-          } else {
-            resetMonitorState();
+        // Preset column: fills the input box (confirm with OK), so cancel
+        // semantics and the single apply path stay intact.
+        if (key_accept) {
+          if (uiHit(PRESET_BTN[0], t_x, t_y)) {          // 2.4GHz = 1..13
+            strcpy(ch_buf, "1-13");
+            ch_len = 4;
+            ch_err = nullptr;
+            ch_last_press_ms = millis();
+            ch_keypad_echo();
+          } else if (uiHit(PRESET_BTN[1], t_x, t_y)) {   // 5GHz: placeholder
+            // Current ESP32 target has no 5 GHz support; inert on purpose.
+          } else if (uiHit(PRESET_BTN[2], t_x, t_y)) {   // ALL (current target full set)
+            // ALL = the full channel set the firmware supports. On this
+            // 2.4 GHz-only ESP32 target that is 1..13; a dual-band target
+            // (ESP32-C5) would extend this preset with its 5 GHz set.
+            strcpy(ch_buf, "1-13");
+            ch_len = 4;
+            ch_err = nullptr;
+            ch_last_press_ms = millis();
+            ch_keypad_echo();
           }
+        }
+      }
 
+      // ---- LEFT COLUMN: mode / settings selection ----
+      else {
+      bool hit_main = false;
+      for (int i = 0; i < 7 && !hit_main; i++) {
+        if (!uiHit(MAINMENU_BTN[i], t_x, t_y)) continue;
+        hit_main = true;
+        if (i <= 5) {
+          RadioMode m = (RadioMode)i;
+          menu_selection = i;
+          if (m != currentRadioMode) {
+            target_locked = false;
+            memset(traffic_history, 0, sizeof(traffic_history));
+            absolute_max_traffic = 10;
+            // THE UNION SCRUB FIX (carried from the old mode-toggle path):
+            // leakHistory shares a union with Wi-Fi/BLE session data; scrub
+            // it before switching to PCAP or the PCAP sorting engine will
+            // choke on Wi-Fi garbage bytes.
+            if (m == RADIO_PCAP) {
+              memset(leakHistory, 0, sizeof(LeakHistoryEntry) * MAX_LEAK_SLOTS);
+            }
+            switchRadioMode(m);
+            // The menu stays capture-paused: switchRadioMode() reopens the
+            // gate for the new mode, but a mode selected from the menu must
+            // not start capture in the background.
+            pause_sniffing = true;
+            menu_scan_started = false; // real-time screen not yet entered
+          }
+          ch_keypad_open = false;
+          drawMenu();
+          delay(150);
+        } else {
+          // SETTINGS placeholder: no radio change, no actions yet.
+          menu_selection = 6;
           drawMenu();
           delay(150);
         }
       }
-      // ==========================================
-      // UNIFIED SNIFFED DEVICES / LEAK LIST BUTTON
-      // ==========================================
-      else if (uiHit(MENU_BTN_SNIFFLIST, t_x, t_y)) {
-        currentState = SCREEN_DEVICE_LIST;
-        device_current_page = 0;
 
-        // Force an immediate sort before drawing so the array is ready
-        if (currentRadioMode == RADIO_PCAP) processPcapData();
-        else forceSessionSort();
+      // ---- RIGHT COLUMN: submenu actions of the selected entry ----
+      if (!hit_main && menu_selection <= 5) {
+        RadioMode m = (RadioMode)menu_selection;
 
-        drawDeviceList();
-        delay(300);
-      }
-      // ==========================================
-      // RADIO MODE TOGGLE TOUCH LOGIC (X:300-450, Y:190-230)
-      // ==========================================
-      else if (uiHit(MENU_BTN_MODE, t_x, t_y)) {
+        // FOXHUNT: unchanged data-availability gating and entry flow.
+        auto foxhuntAction = [&]() {
+          ch_keypad_open = false;
+          bool foxhunt_available = false;
+          if (currentRadioMode == RADIO_WIFI) foxhunt_available = (target_locked && sessionMacCount > 0);
+          else if (currentRadioMode == RADIO_BLE) foxhunt_available = (sessionBleCount > 0);
+          else if (currentRadioMode == RADIO_AP) foxhunt_available = (sessionApCount > 0);
+          if (!foxhunt_available) return;
+          is_selecting_target = true;
+          currentState = SCREEN_DEVICE_LIST;
+          drawDeviceList();
+          delay(400);
+        };
 
-        target_locked = false;
-        memset(traffic_history, 0, sizeof(traffic_history));
-        absolute_max_traffic = 10;
+        // Old EXIT path, reused verbatim as START/RESUME SCAN (and BACK):
+        // leaves the menu for the real-time screen, reopens the capture
+        // gate, re-locks the channel, resumes promiscuous capture.
+        auto scanAction = [&]() {
+          ch_keypad_open = false;
+          currentState = SCREEN_CHART;
+          tft.fillScreen(TFT_BLACK);
+          drawChartHeader();
+          drawChartFooter();
 
-        RadioMode nextMode;
-        if (currentRadioMode == RADIO_WIFI) nextMode = RADIO_BLE;
-        else if (currentRadioMode == RADIO_BLE) nextMode = RADIO_AP;
-        else if (currentRadioMode == RADIO_AP) nextMode = RADIO_CHANNELS;
-        else if (currentRadioMode == RADIO_CHANNELS) nextMode = RADIO_PCAP;
-        else if (currentRadioMode == RADIO_PCAP) nextMode = RADIO_CT;
-        else nextMode = RADIO_WIFI;
+          force_ui_refresh = true;
 
-        tft.setFreeFont(&UbuntuMono_Regular9pt7b);
-        tft.setTextDatum(MC_DATUM);
-
-        if (nextMode == RADIO_WIFI) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_BLUE);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: WI-FI", 375, 210);
-        } else if (nextMode == RADIO_BLE) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_PURPLE);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: BLE", 375, 210);
-        } else if (nextMode == RADIO_AP) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_DARKGREEN);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: NETWORKS", 375, 210);
-        } else if (nextMode == RADIO_CHANNELS) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_ORANGE);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: CHANNELS", 375, 210);
-        } else if (nextMode == RADIO_PCAP) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_MAROON);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: PCAP", 375, 210);
-        } else if (nextMode == RADIO_CT) {
-          tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_NAVY);
-          tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-          tft.setTextColor(TFT_WHITE);
-          tft.drawString("MODE: CT", 375, 210);
-        }
-
-        bool foxhunt_available = false;
-
-        if (nextMode == RADIO_BLE) {
-            if (sessionBleCount > 0) foxhunt_available = true;
-        } else if (nextMode == RADIO_AP) {
-            if (sessionApCount > 0) foxhunt_available = true;
-        } else if (nextMode == RADIO_WIFI) {
-            if (target_locked == true && sessionMacCount > 0) foxhunt_available = true;
-        }
-
-        if (foxhunt_available) {
-            tft.fillRoundRect(50, 90, 200, 40, 3, TFT_RED);
-            tft.drawRoundRect(50, 90, 200, 40, 3, TFT_WHITE);
-            tft.setTextColor(TFT_WHITE);
-            tft.drawString("FOXHUNT", 150, 110);
-        } else {
-            uint16_t deadGrey = hex24to565(0x222222);
-            tft.fillRect(50, 90, 200, 50, deadGrey);
-            tft.drawRect(50, 90, 200, 40, TFT_DARKGREY);
-            tft.setTextColor(TFT_DARKGREY);
-            tft.drawString("FOXHUNT", 150, 110);
-
-            tft.setTextColor(hex24to565(0x444444));
-            tft.drawString("(no targets yet)", 150, 125);
-        }
-
-        tft.setTextDatum(TL_DATUM);
-
-        // ==========================================
-        // THE UNION SCRUB FIX
-        // Because leakHistory shares a union with Wi-Fi/BLE session data,
-        // we MUST scrub it clean when switching to PCAP. If we don't, the
-        // PCAP sorting engine will choke on Wi-Fi garbage bytes!
-        // ==========================================
-        if (nextMode == RADIO_PCAP) {
-            memset(leakHistory, 0, sizeof(LeakHistoryEntry) * MAX_LEAK_SLOTS);
-        }
-
-        switchRadioMode(nextMode);
-        delay(200);
-      }
-      // ==========================================
-      // EXIT BUTTON TOUCH LOGIC
-      // ==========================================
-      else if (uiHit(MENU_BTN_EXIT, t_x, t_y)) {
-        currentState = SCREEN_CHART;
-        tft.fillScreen(TFT_BLACK);
-        drawChartHeader();
-        drawChartFooter();
-
-        force_ui_refresh = true;
-
-        if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT) {
+          if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT) {
             esp_wifi_set_promiscuous(true);
+          }
+
+          // Menu -> real-time screen starts a fresh x/y/z telemetry session:
+          // zero the three cumulative waterfall counters without
+          // resetMonitorState()'s union wipes (this path deliberately resumes
+          // capture/history state). Before the gate reopens so post-resume
+          // increments land on fresh counts.
+          pcap_displayed_total = 0;
+          pcap_upstream_total  = 0;
+          pcap_cooldown_total  = 0;
+
+          // Restore the software capture gate.
+          pause_sniffing = false;
+
+          if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {
+            esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
+          } else if (currentRadioMode != RADIO_BLE) {
+            // Begin on the configured channel set when one exists.
+            if (hop_count > 0) esp_wifi_set_channel(hop_channels[hop_pos], WIFI_SECOND_CHAN_NONE);
+            else esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
+          }
+
+          current_x = 0;
+          menu_scan_started = true;
+          delay(300);
+        };
+
+        // DEVICES: old SNIFF LIST action, verbatim.
+        auto devicesAction = [&]() {
+          ch_keypad_open = false;
+          currentState = SCREEN_DEVICE_LIST;
+          device_current_page = 0;
+
+          // Force an immediate sort before drawing so the array is ready
+          if (currentRadioMode == RADIO_PCAP) processPcapData();
+          else forceSessionSort();
+
+          drawDeviceList();
+          delay(300);
+        };
+
+        // SELECT AP (WIFI only): AP scanner, verbatim.
+        auto selectApAction = [&]() {
+          ch_keypad_open = false;
+          currentState = SCREEN_AP_SCAN;
+          drawApScanner();
+          delay(300);
+        };
+
+        // SELECT CH (WIFI, NETWORKS & PCAP): opens the compact channel
+        // keypad below the button. Capture remains paused; confirm parses
+        // and applies the channel set, cancel leaves everything unchanged.
+        auto selectChAction = [&]() {
+          ch_len = 0;
+          ch_buf[0] = '\0';
+          ch_err = nullptr;
+          ch_keypad_open = true;
+          drawMenu();
+          drawMenuKeypad(ch_buf, ch_err);
+        };
+
+        // Row -> action dispatch (matches drawMenu()'s row table).
+        if (m == RADIO_WIFI) {
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) selectApAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[4], t_x, t_y)) selectChAction();
+        } else if (m == RADIO_BLE) {
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction();
+        } else if (m == RADIO_AP) {
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) foxhuntAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) selectChAction();
+        } else if (m == RADIO_CHANNELS) {
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) scanAction();
+        } else if (m == RADIO_PCAP) {
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) scanAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) selectChAction();
+        } else { // RADIO_CT
+          if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) {
+            ch_keypad_open = false;
+            currentState = SCREEN_PROBE_TRACKER;
+            probe_current_page = 0;
+            drawProbeTracker();
+            delay(300);
+          }
+          else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction(); // RF ENVS -> CT real-time screen
+          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) scanAction();
         }
-
-        // MENU → EXIT starts a fresh x/y/z telemetry session: zero the three
-        // cumulative waterfall counters without resetMonitorState()'s union
-        // wipes (this path deliberately resumes capture/history state).
-        // Before the gate reopens so post-resume increments land on fresh counts.
-        pcap_displayed_total = 0;
-        pcap_upstream_total  = 0;
-        pcap_cooldown_total  = 0;
-
-        // Restore the software capture gate (the MENU path raised it and the
-        // EXIT path used to leave it set, deadlocking capture for up to the
-        // next runProbeCorrelationEngine cycle).
-        pause_sniffing = false;
-
-        if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {
-          esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
-        } else if (currentRadioMode != RADIO_BLE) {
-          esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
-        }
-
-        current_x = 0;
-        delay(300);
       }
+      } // end not-keypad-open
     }
 
     // ==========================================
@@ -375,6 +448,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         }
         else if (t_x >= SCREEN_W / 3 && t_x <= SCREEN_W * 2 / 3) {
           currentState = SCREEN_MENU;
+          menu_selection = (int)currentRadioMode;
           drawMenu();
           delay(300);
         }
@@ -470,6 +544,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         }
         else if (t_x >= SCREEN_W / 3 && t_x <= SCREEN_W * 2 / 3) {
           currentState = SCREEN_MENU;
+          menu_selection = (int)currentRadioMode;
           ap_current_page = 0;
           drawMenu();
           delay(300);
@@ -491,6 +566,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
 
         currentState = SCREEN_MENU;
+        menu_selection = (int)currentRadioMode;
         drawMenu();
         delay(300);
       }
@@ -602,6 +678,7 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y) {
         // 3. BACK TO MENU
         else if (t_x >= 160 && t_x <= 320) {
           currentState = SCREEN_MENU;
+          menu_selection = (int)currentRadioMode;
           device_current_page = 0;
           drawMenu();
           delay(300);

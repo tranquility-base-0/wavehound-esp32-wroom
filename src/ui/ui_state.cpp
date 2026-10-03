@@ -1,7 +1,7 @@
 #include "ui_state.h"
 #include "ui_utils.h"
 
-UIState currentState = SCREEN_CHART;
+UIState currentState = SCREEN_MENU; // boot into the paused main menu
 bool useLogScale = false;
 uint16_t calData[5] = { 288, 3501, 301, 3244, 7 };
 TFT_eSPI tft = TFT_eSPI();
@@ -28,12 +28,29 @@ void ui_init_geometry() {
 // ============================================================
 // Authoritative control rectangles (see ui_state.h)
 // ============================================================
-const UiRect MENU_BTN_FOXHUNT    = { 50,  90, 200, 40 };
-const UiRect MENU_BTN_PROBES     = { 300, 140, 150, 40 };
-const UiRect MENU_BTN_SELECT_AP  = { 50,  190, 200, 40 };
-const UiRect MENU_BTN_MODE       = { 300, 190, 150, 40 };
-const UiRect MENU_BTN_SNIFFLIST  = { 50,  240, 200, 40 };
-const UiRect MENU_BTN_EXIT       = { 300, 240, 150, 40 };
+const UiRect MAINMENU_BTN[7] = {
+  { 18,  40, 132, 32}, { 18,  78, 132, 32}, { 18, 116, 132, 32},
+  { 18, 154, 132, 32}, { 18, 192, 132, 32}, { 18, 230, 132, 32},
+  { 18, 268, 132, 32} };
+const UiRect SUBMENU_BTN[5] = {
+  {160,  40, 310, 32}, {160,  78, 310, 32}, {160, 116, 310, 32},
+  {160, 154, 310, 32}, {160, 192, 310, 32} };
+// Keypad: sits below every possible SELECT CH row (row 4 ends at y=224);
+// keys 5 per row inside the right column so the main-menu column stays
+// visible and unobscured. Numeric grid is respaced to 44 px columns to make
+// room for the dedicated preset column on the right (x=408..470).
+const UiRect KEYPAD_BTN[15] = {
+  {160, 248, 44, 22}, {208, 248, 44, 22}, {256, 248, 44, 22},
+  {304, 248, 44, 22}, {352, 248, 44, 22},
+  {160, 272, 44, 22}, {208, 272, 44, 22}, {256, 272, 44, 22},
+  {304, 272, 44, 22}, {352, 272, 44, 22},
+  {160, 296, 44, 22}, {208, 296, 44, 22}, {256, 296, 44, 22},
+  {304, 296, 44, 22}, {352, 296, 44, 22} };
+const UiRect PRESET_BTN[3] = {
+  {408, 248, 62, 22}, {408, 272, 62, 22}, {408, 296, 62, 22} };
+
+int  menu_selection  = 0;    // boot: WIFI selected by default
+bool menu_scan_started = false; // boot: no scan yet -- START SCAN begins it
 
 const UiRect LIST_SORT_BTN       = { 275, 2, 130, 20 };
 const UiRect LIST_DIR_BTN        = { 410, 2, 65,  20 };

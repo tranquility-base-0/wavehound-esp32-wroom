@@ -19,159 +19,161 @@
 
 #include "foxhunt.h"
 
+// Draw one standard menu button: white outline, black interior, white
+// left-aligned 9pt face text. Disabled buttons keep the layout and dim.
+static void drawMenuBtn(const UiRect &r, const char *label, bool enabled) {
+  tft.fillRect(r.x, r.y, r.w, r.h, TFT_BLACK);
+  tft.drawRect(r.x, r.y, r.w, r.h, enabled ? TFT_WHITE : TFT_DARKGREY);
+  tft.setTextDatum(TL_DATUM);
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  tft.setTextColor(enabled ? TFT_WHITE : TFT_DARKGREY);
+  tft.drawString(label, r.x + 10, r.y + 9);
+}
+
 void drawMenu() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextSize(1);
 
-  // HEADER
-  tft.setFreeFont(&UbuntuMono_Regular11pt7b);
-  tft.setTextDatum(MC_DATUM);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("DASHBOARD SETTINGS", 240, 40);
-
+  // Breadcrumb: same face font as the buttons; SUB-MENU aligned with the
+  // left edge of the right-column button-face text.
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
-
-  // ==========================================
-  // FOXHUNT BUTTON (Tactical Mode)
-  // ==========================================
-  tft.setTextDatum(MC_DATUM);
-
-  bool foxhunt_available = false;
-
-  // 1. BLE MODE EVALUATION
-  if (currentRadioMode == RADIO_BLE) {
-    if (sessionBleCount > 0) {
-        foxhunt_available = true;
-    }
-  }
-  // 2. NETWORKS (AP) MODE EVALUATION
-  else if (currentRadioMode == RADIO_AP) {
-      if (sessionApCount > 0) {
-          foxhunt_available = true;
-      }
-  }
-  // 3. WI-FI MODE EVALUATION (Isolated at the bottom)
-  else if (currentRadioMode == RADIO_WIFI) {
-      if (target_locked == true && sessionMacCount > 0) {
-          foxhunt_available = true;
-      }
-  }
-
-  if (foxhunt_available) {
-      // Draw active red button
-      tft.fillRoundRect(MENU_BTN_FOXHUNT.x, MENU_BTN_FOXHUNT.y, MENU_BTN_FOXHUNT.w, MENU_BTN_FOXHUNT.h, 3, TFT_RED);   // Fill it red
-      tft.drawRoundRect(MENU_BTN_FOXHUNT.x, MENU_BTN_FOXHUNT.y, MENU_BTN_FOXHUNT.w, MENU_BTN_FOXHUNT.h, 3, TFT_WHITE); // Add the crisp border
-      tft.setTextColor(TFT_WHITE);
-      tft.drawString("FOXHUNT", 150, 110);
-  } else {
-      // Greyed out — no target locked
-      uint16_t deadGrey = hex24to565(0x222222);
-      tft.fillRect(MENU_BTN_FOXHUNT.x, MENU_BTN_FOXHUNT.y, MENU_BTN_FOXHUNT.w, MENU_BTN_FOXHUNT.h, deadGrey);
-      tft.drawRect(MENU_BTN_FOXHUNT.x, MENU_BTN_FOXHUNT.y, MENU_BTN_FOXHUNT.w, MENU_BTN_FOXHUNT.h, TFT_DARKGREY);
-      tft.setTextColor(TFT_DARKGREY);
-      tft.drawString("FOXHUNT", 150, 110);
-
-      // Hint text
-      tft.setFreeFont(&UbuntuMono_Regular9pt7b);
-      tft.setTextColor(hex24to565(0x444444));
-      tft.drawString("(no targets yet)", 150, 125);
-  }
-
-  // ==========================================
-  // PROBE REQUEST BUTTON (Right Column)
-  // ==========================================
-  uint16_t purpleColor = hex24to565(0x4A148C);
-  tft.fillRect(MENU_BTN_PROBES.x, MENU_BTN_PROBES.y, MENU_BTN_PROBES.w, MENU_BTN_PROBES.h, purpleColor);
-  tft.drawRect(MENU_BTN_PROBES.x, MENU_BTN_PROBES.y, MENU_BTN_PROBES.w, MENU_BTN_PROBES.h, TFT_WHITE);
+  tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_WHITE);
-  tft.drawString("SNIFFED PROBES", 375, 160);
+  int mm_left = MAINMENU_BTN[0].x + 10;  // = left edge of button-face text
+  int sub_left = SUBMENU_BTN[0].x + 10;
+  int mm_w = tft.textWidth("MAIN MENU");
+  tft.drawString("MAIN MENU", mm_left, 9);
+  tft.drawString(">", (mm_left + mm_w + sub_left) / 2, 9);
+  tft.drawString("SUB-MENU", sub_left, 9);
 
-  // ==========================================
-  // 3. AP SCANNER / CH SELECT BUTTON (Y: 190 - 230)
-  // ==========================================
-  if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
-    // Active State
-    tft.fillRect(MENU_BTN_SELECT_AP.x, MENU_BTN_SELECT_AP.y, MENU_BTN_SELECT_AP.w, MENU_BTN_SELECT_AP.h, TFT_BLACK);
-    tft.drawRect(MENU_BTN_SELECT_AP.x, MENU_BTN_SELECT_AP.y, MENU_BTN_SELECT_AP.w, MENU_BTN_SELECT_AP.h, TFT_WHITE);
-    tft.setTextColor(TFT_WHITE);
-
-    if (currentRadioMode == RADIO_WIFI) {
-        tft.drawString("SELECT AP", 150, 210);
-    } else if (currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) {
-        if (target_locked) {
-            char chStr[16];
-            snprintf(chStr, sizeof(chStr), "LOCKED: CH %d", target_channel);
-            tft.drawString(chStr, 150, 210);
-        } else {
-            tft.drawString("SELECT CH", 150, 210);
-        }
+  // ---- LEFT COLUMN: main menu (0..5 = RadioMode order, 6 = SETTINGS) ----
+  static const char *mainLabels[7] = {
+    "WIFI", "BLE", "NETWORKS", "CHANNELS", "PCAP", "CHASE TAIL", "SETTINGS" };
+  for (int i = 0; i < 7; i++) {
+    drawMenuBtn(MAINMENU_BTN[i], mainLabels[i], true);
+    if (i == menu_selection) {
+      // Active-selection marker bar (outside the button face)
+      tft.fillRect(10, MAINMENU_BTN[i].y, 5, MAINMENU_BTN[i].h, TFT_WHITE);
     }
-  } else {
-    // "Cold" Abyss State
-    uint16_t deadGrey = hex24to565(0x222222);      // Almost black
-    tft.fillRect(MENU_BTN_SELECT_AP.x, MENU_BTN_SELECT_AP.y, MENU_BTN_SELECT_AP.w, MENU_BTN_SELECT_AP.h, deadGrey);
-    tft.drawRect(MENU_BTN_SELECT_AP.x, MENU_BTN_SELECT_AP.y, MENU_BTN_SELECT_AP.w, MENU_BTN_SELECT_AP.h, TFT_DARKGREY);
+  }
+
+  // ---- RIGHT COLUMN: submenu of the selected entry ----
+  if (menu_selection == 6) {
+    // SETTINGS placeholder: no actions exist yet.
+    tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+    tft.setTextDatum(TL_DATUM);
     tft.setTextColor(TFT_DARKGREY);
-    tft.drawString("SELECT AP", 150, 210);
+    tft.drawString("PLACEHOLDER", SUBMENU_BTN[0].x + 10, SUBMENU_BTN[0].y + 9);
+    tft.setTextDatum(TL_DATUM);
+    return;
   }
 
-  // 4. SEEN DEVICES BUTTON
-  tft.fillRect(MENU_BTN_SNIFFLIST.x, MENU_BTN_SNIFFLIST.y, MENU_BTN_SNIFFLIST.w, MENU_BTN_SNIFFLIST.h, TFT_BLACK);
-  tft.drawRect(MENU_BTN_SNIFFLIST.x, MENU_BTN_SNIFFLIST.y, MENU_BTN_SNIFFLIST.w, MENU_BTN_SNIFFLIST.h, TFT_WHITE);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("SNIFF LIST", 150, 260);
+  RadioMode m = (RadioMode)menu_selection;
 
-  // ==========================================
-  // RADIO MODE TOGGLE
-  // ==========================================
-  tft.setTextColor(TFT_WHITE); // Set this once for all modes
+  // FOXHUNT data-availability (unchanged evaluation from the old menu)
+  bool foxhunt_available = false;
+  if (m == RADIO_WIFI) foxhunt_available = (target_locked && sessionMacCount > 0);
+  else if (m == RADIO_BLE) foxhunt_available = (sessionBleCount > 0);
+  else if (m == RADIO_AP) foxhunt_available = (sessionApCount > 0);
 
-  // 1. Draw the filled background based on the current mode
-  if (currentRadioMode == RADIO_WIFI) {
-    tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_BLUE);
-  }
-  else if (currentRadioMode == RADIO_BLE) {
-    tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_PURPLE);
-  }
-  else if (currentRadioMode == RADIO_AP) {
-    tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_DARKGREEN);
-  }
-  else if (currentRadioMode == RADIO_CHANNELS) {
-    tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_ORANGE);
-  }
-  else if (currentRadioMode == RADIO_PCAP) {
-    tft.fillRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_MAROON);
+  const char *scanLabel = menu_scan_started ? "RESUME SCAN" : "START SCAN";
+
+  // Row semantics per mode (rows are top-aligned, no gaps):
+  //   WIFI/AP:   FOXHUNT, SELECT AP/CH, DEVICES, SCAN, BACK
+  //   BLE:       FOXHUNT, DEVICES, SCAN, BACK
+  //   CHANNELS:  DEVICES, SCAN, BACK
+  //   PCAP:      SELECT CH, DEVICES, SCAN, BACK
+  //   CT:        PROBES, DEVICES, RF ENVS, SCAN, BACK
+  const char *rows[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+  bool foxEnabled = false;
+  int n_rows = 0;
+  if (m == RADIO_WIFI) {
+    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
+    rows[1] = "SELECT AP";
+    rows[2] = "DEVICES";
+    rows[3] = scanLabel;
+    rows[4] = "SELECT CH";
+    n_rows = 5;
+  } else if (m == RADIO_BLE) {
+    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
+    rows[1] = "DEVICES";
+    rows[2] = scanLabel;
+    n_rows = 3;
+  } else if (m == RADIO_AP) {
+    rows[0] = "FOXHUNT"; foxEnabled = foxhunt_available;
+    rows[1] = "DEVICES";
+    rows[2] = scanLabel;
+    rows[3] = "SELECT CH";
+    n_rows = 4;
+  } else if (m == RADIO_CHANNELS) {
+    rows[0] = "DEVICES";
+    rows[1] = scanLabel;
+    n_rows = 2;
+  } else if (m == RADIO_PCAP) {
+    rows[0] = "DEVICES";
+    rows[1] = scanLabel;
+    rows[2] = "SELECT CH";
+    n_rows = 3;
+  } else { // RADIO_CT
+    rows[0] = "PROBES";
+    rows[1] = "DEVICES";
+    rows[2] = "RF ENVS";
+    rows[3] = scanLabel;
+    n_rows = 4;
   }
 
-  // 2. Draw the universal white border
-  tft.drawRect(MENU_BTN_MODE.x, MENU_BTN_MODE.y, MENU_BTN_MODE.w, MENU_BTN_MODE.h, TFT_WHITE);
-
-  // 3. Draw the corresponding text label
-  if (currentRadioMode == RADIO_WIFI) {
-    tft.drawString("MODE: WI-FI", 375, 210);
+  for (int k = 0; k < n_rows; k++) {
+    bool en = (k == 0 && rows[0] && (m == RADIO_WIFI || m == RADIO_BLE || m == RADIO_AP))
+                  ? foxEnabled : true;
+    drawMenuBtn(SUBMENU_BTN[k], rows[k], en);
   }
-  else if (currentRadioMode == RADIO_BLE) {
-    tft.drawString("MODE: BLE", 375, 210);
-  }
-  else if (currentRadioMode == RADIO_AP) {
-    tft.drawString("MODE: NETWORKS", 375, 210);
-  }
-  else if (currentRadioMode == RADIO_CHANNELS) {
-    tft.drawString("MODE: CHANNELS", 375, 210);
-  }
-  else if (currentRadioMode == RADIO_PCAP) {
-    tft.drawString("MODE: PCAP", 375, 210);
-  }
-
-  // 5. EXIT BUTTON
-  tft.fillRect(MENU_BTN_EXIT.x, MENU_BTN_EXIT.y, MENU_BTN_EXIT.w, MENU_BTN_EXIT.h, TFT_RED);
-  tft.drawRect(MENU_BTN_EXIT.x, MENU_BTN_EXIT.y, MENU_BTN_EXIT.w, MENU_BTN_EXIT.h, TFT_WHITE);
-  tft.setTextColor(TFT_WHITE);
-  tft.drawString("EXIT", 375, 260);
-
-  // THE FIX: Reset datum to Top-Left for the rest of the UI ONLY at the very end!
   tft.setTextDatum(TL_DATUM);
 }
+// SELECT CH keypad: blank input box + 5x3 key grid + preset column, drawn
+// below the submenu so no other submenu button is obscured. err != nullptr
+// shows a validation message (red) inside the box instead of the buffer.
+void drawMenuKeypad(const char *buf, const char *err) {
+  // Input box: visually empty before any input (no prompt text).
+  tft.fillRect(161, 229, 308, 18, TFT_BLACK);
+  tft.drawRect(161, 229, 308, 18, TFT_WHITE);
+  tft.setFreeFont(&UbuntuMono_B9pt7b);   // entered channel text is bold
+  tft.setTextDatum(TL_DATUM);
+  if (err) {
+    tft.setTextColor(TFT_RED);
+    tft.drawString(err, 170, 231);
+  } else if (buf[0] != '\0') {
+    char line[44];
+    snprintf(line, sizeof(line), "%s_", buf);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString(line, 170, 231);
+  }
+
+  static const char *keyLabels[15] = {
+    "1", "2", "3", "4", "5",
+    "6", "7", "8", "9", "0",
+    ",", "-", "<-", "OK", "X" };
+  tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+  for (int k = 0; k < 15; k++) {
+    tft.fillRect(KEYPAD_BTN[k].x, KEYPAD_BTN[k].y, KEYPAD_BTN[k].w, KEYPAD_BTN[k].h, TFT_BLACK);
+    tft.drawRect(KEYPAD_BTN[k].x, KEYPAD_BTN[k].y, KEYPAD_BTN[k].w, KEYPAD_BTN[k].h, TFT_WHITE);
+    tft.setTextColor(TFT_WHITE);
+    tft.drawString(keyLabels[k], KEYPAD_BTN[k].x + 8, KEYPAD_BTN[k].y + 3);
+  }
+
+  // Preset column (2.4GHz / 5GHz placeholder / ALL), same button style;
+  // 5GHz is dimmed: the current ESP32 target has no 5 GHz support.
+  static const char *presetLabels[3] = { "2.4GHz", "5GHz", "ALL" };
+  for (int k = 0; k < 3; k++) {
+    bool enabled = (k != 1);
+    tft.fillRect(PRESET_BTN[k].x, PRESET_BTN[k].y, PRESET_BTN[k].w, PRESET_BTN[k].h, TFT_BLACK);
+    tft.drawRect(PRESET_BTN[k].x, PRESET_BTN[k].y, PRESET_BTN[k].w, PRESET_BTN[k].h,
+                 enabled ? TFT_WHITE : TFT_DARKGREY);
+    tft.setTextColor(enabled ? TFT_WHITE : TFT_DARKGREY);
+    tft.drawString(presetLabels[k], PRESET_BTN[k].x + 5, PRESET_BTN[k].y + 3);
+  }
+  tft.setTextDatum(TL_DATUM);
+}
+
 void drawApScanner() {
   tft.fillScreen(TFT_BLACK);
   tft.setTextSize(1);
@@ -218,7 +220,7 @@ void drawApScanner() {
   tft.setTextDatum(TL_DATUM);
   tft.setTextColor(TFT_GREEN);
   tft.drawRect(0, 40, SCREEN_W, 35, TFT_DARKGREY);
-  tft.drawString("CH:ALL (Sniff Free Airspace)", 5, 50);
+  tft.drawString("CH:ALL (Free Airspace)", 5, 50);
 
   tft.setTextColor(TFT_WHITE);
 
@@ -455,11 +457,11 @@ void drawDeviceList() {
     tft.fillRect(0, 0, SCREEN_W, 24, headerColor);
     char headerStr[64];
     if (currentRadioMode == RADIO_PCAP || total_devices == 0) {
-      snprintf(headerStr, sizeof(headerStr), " SNIFFED %s (%d)", modeStr, total_devices);
+      snprintf(headerStr, sizeof(headerStr), " %s (%d)", modeStr, total_devices);
     } else {
       // Persistent grid lists: show the current pagination range
       // (1-based, inclusive) instead of a bare total.
-      snprintf(headerStr, sizeof(headerStr), " SNIFFED %s %d-%d of %d",
+      snprintf(headerStr, sizeof(headerStr), " %s %d-%d of %d",
                modeStr, start_idx + 1, end_idx, total_devices);
     }
     tft.drawString(headerStr, 5, 5);

@@ -1,4 +1,5 @@
 #include "radio.h"
+#include "esp_chip_info.h" // official chip-identification API (radioHas5GHz)
 #include "osint/vendor.h"
 #include "capture/capture.h"
 #include "modes/ble.h"
@@ -8,6 +9,33 @@
 
 RadioMode currentRadioMode = RADIO_WIFI;
 int current_ch_idx = 0;
+
+// ---------------------------------------------------------------------------
+// Chip capability groundwork for the eventual ESP32-C5 dual-band target.
+// 5 GHz support (channels, band switching, hopping) is NOT implemented; this
+// only reports whether the running chip is 5 GHz-capable. Detection uses the
+// official Espressif chip-identification API and is cached after the first
+// query. On the current esp32dev/WROOM build the IDF target macro resolves
+// the answer at compile time to false, so behavior is unchanged; on a future
+// C5 build environment esp_chip_info() confirms the chip at runtime.
+bool radioHas5GHz() {
+  static bool cached_5ghz = false;    // chip model is fixed for the lifetime
+  static bool cached_init = false;
+  if (!cached_init) {
+    cached_init = true;
+#if defined(CONFIG_IDF_TARGET_ESP32C5)
+    esp_chip_info_t chip;
+    esp_chip_info(&chip);
+    cached_5ghz = (chip.model == CHIP_ESP32C5); // C5: 2.4 GHz + 5 GHz capable
+#else
+    cached_5ghz = false;                        // esp32dev/WROOM: 2.4 GHz only
+#endif
+  }
+  return cached_5ghz;
+}
+uint8_t hop_channels[NUM_CHANNELS]; // custom hop set (0 = unused slot)
+uint8_t hop_count = 0;              // 0 = full CHANNELS[] sweep
+uint8_t hop_pos = 0;
 uint8_t target_bssid[6] = {0};
 int target_channel = 0;
 bool target_locked = false;
@@ -203,6 +231,66 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
   }
 };
 
+
+// ---------------------------------------------------------------------------
+// SELECT CH keypad parser (Step-1 menu refinement)
+// Grammar:  list   := channel (',' channel)*
+//           channel := number ('-' number)?
+// Whitespace is not accepted. The result is deduped in ascending encounter
+// order; range bounds and values are validated against CHANNELS[] so the
+// accepted range always matches the firmware's radio table (1..13).
+bool parseChannelList(const char *s, uint8_t *out, uint8_t *out_count) {
+  const int ch_min = CHANNELS[0];
+  const int ch_max = CHANNELS[NUM_CHANNELS - 1];
+  bool seen[NUM_CHANNELS + 1] = {false}; // index by channel number (1..13)
+  uint8_t count = 0;
+  const char *p = s;
+
+  if (s == nullptr || *s == '\0') return false; // reject empty input
+
+  while (*p != '\0') {
+    if (*p < '0' || *p > '9') return false; // each item starts with a digit
+    int a = 0;
+    int digits = 0;
+    while (*p >= '0' && *p <= '9') {
+      a = a * 10 + (*p - '0');
+      p++;
+      if (++digits > 2) return false; // no channel is 3+ digits
+    }
+    if (a < ch_min || a > ch_max) return false;
+    int b = a;
+    if (*p == '-') {
+      p++;
+      if (*p < '0' || *p > '9') return false;
+      b = 0;
+      digits = 0;
+      while (*p >= '0' && *p <= '9') {
+        b = b * 10 + (*p - '0');
+        p++;
+        if (++digits > 2) return false;
+      }
+      if (b < ch_min || b > ch_max || b < a) return false; // empty/invalid range
+    }
+    for (int c = a; c <= b; c++) { // expand ranges, dedupe channels
+      if (!seen[c]) {
+        seen[c] = true;
+        if (count >= NUM_CHANNELS) return false;
+        out[count++] = (uint8_t)c;
+      }
+    }
+    if (*p == ',') {          // next item must follow a separator
+      p++;
+      if (*p == '\0') return false; // reject trailing comma
+    } else if (*p != '\0') {
+      return false;               // any other trailing character is malformed
+    }
+  }
+
+  if (count == 0) return false;
+  *out_count = count;
+  return true;
+}
+
 void switchRadioMode(RadioMode targetMode) {
   if (currentRadioMode == targetMode) return;
 
@@ -220,6 +308,13 @@ void switchRadioMode(RadioMode targetMode) {
   sessionBleCount = 0; sortBleCount = 0; liveBleCount = 0;
   sessionApCount = 0; sortApCount = 0; liveApCount = 0;
   sessionChannelCount = 0; sortChannelCount = 0; liveChannelCount = 0;
+
+  // The SELECT CH custom hop set is mode-local: every mode transition
+  // forgets it and the new mode starts from the default full CHANNELS[]
+  // sweep. START/RESUME within the same mode is unaffected (early return
+  // above skips this whole block).
+  hop_count = 0;
+  hop_pos = 0;
 
   // 3. HARDWARE ANTENNA TOGGLE
   // RADIO_CT reuses the Wi-Fi promiscuous/capture initialization path
@@ -291,29 +386,49 @@ bool updateRadioHopper() {
             if (!target_locked) {
                 if (millis() - lastTimer > HOP_INTERVAL) {
                     lastTimer = millis();
-                    current_ch_idx++;
+                    uint8_t hop_ch; // channel being applied this tick
 
-                    if (current_ch_idx >= NUM_CHANNELS) {
-                        current_ch_idx = 0;
-                        trigger_render = true; // Replaces should_render = true
+                    if (hop_count > 0) {
+                        // Custom channel set (SELECT CH keypad): cycle the
+                        // user's list instead of the full CHANNELS[] sweep.
+                        // Keep the full-sweep index in sync so CHANNELS-mode
+                        // attribution (CHANNELS[current_ch_idx]) stays valid,
+                        // and render once per set-cycle like the full sweep
+                        // (otherwise the render/processing gate starves and
+                        // the chart shows zero traffic).
+                        hop_pos = (hop_pos + 1) % hop_count;
+                        hop_ch = hop_channels[hop_pos];
+                        current_ch_idx = hop_ch - 1; // CHANNELS[] = 1..13
+                        if (hop_pos == 0) trigger_render = true;
+                    } else {
+                        current_ch_idx++;
+                        if (current_ch_idx >= NUM_CHANNELS) {
+                            current_ch_idx = 0;
+                            trigger_render = true; // Replaces should_render = true
+                        }
+                        hop_ch = CHANNELS[current_ch_idx];
                     }
 
-                    esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
+                    esp_wifi_set_channel(hop_ch, WIFI_SECOND_CHAN_NONE);
 
                     // Only draw the channel indicator if we are on the main chart!
                     if (currentState == SCREEN_CHART) {
-                        // 1. Reduced width from 75 to 62 to prevent clipping the " | "
-                        tft.fillRect(5, 0, 62, 20, TFT_BLACK);
-
                         tft.setFreeFont(&UbuntuMono_Regular9pt7b);
                         tft.setTextDatum(TL_DATUM);
-
                         tft.setTextColor(COLOR_HOT_CHEST);
 
+                        // Digit-adaptive compact prefix matching
+                        // drawChartHeader()'s fmtChPrefix() ("CH:06|" today,
+                        // "CH:149|" for future C5 channels); the wipe width
+                        // derives from text metrics so neither a third digit
+                        // nor the pipe can collide with the banner tail.
                         char chStr[16];
-                        sprintf(chStr, "CH: %02d", CHANNELS[current_ch_idx]);
+                        snprintf(chStr, sizeof(chStr),
+                                 (hop_ch >= 100) ? "CH:%03d|" : "CH:%02d|", hop_ch);
+                        int wipe_w = tft.textWidth(chStr) + 8;
+                        tft.fillRect(5, 0, wipe_w, 20, TFT_BLACK);
 
-                        // 2. Changed y from 0 to 1 to match drawChartHeader() exactly
+                        // Changed y from 0 to 1 to match drawChartHeader() exactly
                         tft.drawString(chStr, 5, 1);
                     }
                 }
@@ -338,7 +453,7 @@ bool updateRadioHopper() {
                     tft.setFreeFont(&UbuntuMono_Regular9pt7b);
                     tft.setTextDatum(TL_DATUM);
                     tft.setTextColor(COLOR_HOT_CHEST);
-                    tft.drawString("SNIFFING BLE DEVICES", 5, 4);
+                    tft.drawString("SCANNING BLE DEVICES", 5, 4);
                 }
             }
         }

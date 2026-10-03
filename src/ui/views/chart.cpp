@@ -32,6 +32,26 @@ void drawTelemetryHeader(uint32_t leaks, uint32_t enqueued, uint32_t attempted) 
 
     tft.drawString(stat_text, 285, 1);
 }
+// Channel-list source accessor for the header: the custom SELECT CH set
+// when one is active, otherwise the default sweep table. Element-wise on
+// purpose (CHANNELS[] is int[], hop_channels[] is uint8_t[]) -- no pointer
+// mixing.
+static inline int hopSetCh(int idx) {
+  return (hop_count > 0) ? (int)hop_channels[idx] : CHANNELS[idx];
+}
+
+// CH prefix formatting, future-proofed for the eventual ESP32-C5
+// implementation: two digits on the current 1..13 table, three digits when
+// C5 channel numbers require them. Width consumers derive geometry from
+// textWidth(), so no fixed two-digit geometry exists anywhere.
+static void fmtChPrefix(char *out, size_t n, int ch) {
+  // Compact prefix: "CH:06|" today, "CH:149|" for future 3-digit C5
+  // channels. The pipe is part of the prefix; the space separating it from
+  // the mode label is added by the banner composer. The narrower prefix
+  // widens the pixel-measured hop-list area.
+  snprintf(out, n, (ch >= 100) ? "CH:%03d|" : "CH:%02d|", ch);
+}
+
 void drawChartHeader() {
   // 1. Gate the horizontal separator line so it doesn't cut through the PCAP terminal
   if (currentRadioMode != RADIO_PCAP) {
@@ -51,43 +71,149 @@ void drawChartHeader() {
   tft.setFreeFont(&UbuntuMono_Regular9pt7b);
   tft.setTextDatum(TL_DATUM);
 
-  char bannerStr[64];
+  char bannerStr[96]; // roomy: CH prefix + mode + HOPPING + compact hop list
 
   // ==========================================
   // THE 4-STATE HEADER LOGIC
   // ==========================================
   tft.setTextColor(COLOR_HOT_CHEST);
+  char chPrefix[10];  // CH:nnn| -- width derived, 3-digit capable (C5 groundwork)
+  bool banner_done = false;
+  const char *modeLabel = nullptr;
+  const char *bannerTail = nullptr; // shared tail for the locked/plain banners
+
   if (currentRadioMode == RADIO_BLE) {
-    snprintf(bannerStr, sizeof(bannerStr), "SNIFFING BLE DEVICES");
+    snprintf(bannerStr, sizeof(bannerStr), "SCANNING BLE DEVICES");
+    banner_done = true;
   }
   else if (currentRadioMode == RADIO_AP) {
+    fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
     if (!target_locked) {
-        snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | SNIFFING NETWORKS", CHANNELS[current_ch_idx]);
+      modeLabel = "NETWORKS"; // HOPPING/list composed below
     } else {
-        snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | TARGET LOCKED", target_channel);
+      fmtChPrefix(chPrefix, sizeof(chPrefix), target_channel);
+      bannerTail = "TARGET LOCKED";
+      banner_done = true;
     }
   }
   else if (currentRadioMode == RADIO_CHANNELS) {
-    snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | SNIFFING SPECTRUM", CHANNELS[current_ch_idx]);
+    fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
+    bannerTail = "| SCANNING SPECTRUM";
+    banner_done = true;
   }
   else if (currentRadioMode == RADIO_PCAP) {
+    fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
     if (!target_locked) {
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (HOPPING)", CHANNELS[current_ch_idx]);
+      modeLabel = "PCAP";
     } else {
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | PCAP (LOCKED)", target_channel);
+      fmtChPrefix(chPrefix, sizeof(chPrefix), target_channel);
+      bannerTail = "PCAP (LOCKED)";
+      banner_done = true;
     }
   }
   else if (currentRadioMode == RADIO_CT) {
-    snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | CHASING TAIL", CHANNELS[current_ch_idx]);
+    fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
+    bannerTail = "| CHASING TAIL";
+    banner_done = true;
   }
-  else if (currentRadioMode == RADIO_WIFI) {
+  else { // RADIO_WIFI
+    fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
     if (!target_locked) {
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | FREE AIRSPACE", CHANNELS[current_ch_idx]);
+      modeLabel = "WIFI";
     } else {
       char safe_ssid[15];
       strncpy(safe_ssid, target_ssid, 14);
       safe_ssid[14] = '\0';
-      snprintf(bannerStr, sizeof(bannerStr), "CH: %02d | %s (%ddBm)", target_channel, safe_ssid, target_rssi);
+      fmtChPrefix(chPrefix, sizeof(chPrefix), target_channel);
+      snprintf(bannerStr, sizeof(bannerStr), "%s %s (%ddBm)", chPrefix, safe_ssid, target_rssi);
+      banner_done = true;
+    }
+  }
+
+  if (bannerTail) { // single shared compose for the locked/plain banners
+    snprintf(bannerStr, sizeof(bannerStr), "%s %s", chPrefix, bannerTail);
+  }
+
+  if (!banner_done) {
+    // HOPPING reflects the ACTIVE regime: default full sweep or a custom
+    // multi-channel set hops; a single-channel set is fixed and shows no tag.
+    bool hopping = (hop_count == 0 || hop_count > 1);
+    // Base = everything before the channel list, composed in place; the
+    // list region starts at base_len + 1 (after the separating space).
+    strcpy(bannerStr, chPrefix);
+    strcat(bannerStr, " ");
+    strcat(bannerStr, modeLabel);
+    int base_len = (int)strlen(bannerStr);
+    if (hopping) strcat(bannerStr, " HOPPING");
+    int tagged_len = (int)strlen(bannerStr); // base incl. the HOPPING tag
+
+    if (hopping) {
+      int len = tagged_len;
+      bannerStr[len++] = ' ';     // list follows the tag with one space
+      bannerStr[len] = '\0';
+      int accept_len = len;       // banner length after the last accepted token
+      int appended = 0;
+
+      // Channel list source: the existing parsed state. No custom set ->
+      // the default sweep renders its own definition (CHANNELS[] bounds),
+      // not a second configuration. Accessed element-wise (type-safe:
+      // CHANNELS[] is int[], hop_channels[] is uint8_t[] -- no pointer
+      // mixing).
+      int n = (hop_count > 0) ? hop_count : NUM_CHANNELS;
+
+      // Pixel-measured, token-complete truncation with '+' overflow:
+      // whole tokens/ranges only, never mid-token; the '+' must itself fit;
+      // if no token fits at all, a bare '+' is shown instead of overflowing.
+      const int budget = SCREEN_W - 75; // safe boundary (MENU zone)
+
+      int i = 0;
+      while (i < n) {
+        int start = hopSetCh(i);
+        int prev = start, j = i + 1;
+        int v = hopSetCh(j); // single evaluation per run-detection step
+        while (j < n && v == prev + 1) { prev = v; j++; v = hopSetCh(j); }
+
+        char tok[12];
+        int toklen = snprintf(tok, sizeof(tok), (j - i > 1) ? "%d-%d" : "%d", start, prev);
+
+        if (appended > 0) bannerStr[len++] = ',';
+        memcpy(bannerStr + len, tok, toklen + 1); // token + NUL
+        len += toklen;
+
+        if (tft.textWidth(bannerStr) <= budget) {
+          appended++;
+          accept_len = len;
+          i = j;
+        } else {
+          // Overflow: drop the failed token, then append '+' after the full
+          // accepted list, shedding complete trailing tokens until it fits.
+          // Shedding finds the last token boundary with strrchr in the list
+          // region (a single-token list has no comma and rewinds to the
+          // separating space; nothing accepted lands on the bare '+').
+          len = accept_len;
+          bannerStr[len] = '\0';
+          char *list0 = bannerStr + base_len + 1;
+          while (true) {
+            bannerStr[len++] = '+';
+            bannerStr[len] = '\0';
+            if (tft.textWidth(bannerStr) <= budget) break;
+            len--; bannerStr[len] = '\0'; // remove '+' before shedding
+            char *cut = strrchr(list0, ',');
+            if (cut) {
+              len = (int)(cut - bannerStr);
+              bannerStr[len] = '\0';
+            } else {
+              // Nothing more to shed: bare '+' after the tag, identical to
+              // the previous "base +" output.
+              bannerStr[tagged_len] = ' ';
+              bannerStr[tagged_len + 1] = '+';
+              bannerStr[tagged_len + 2] = '\0';
+              break;
+            }
+          }
+          break;
+        }
+      }
     }
   }
   tft.drawString(bannerStr, 5, 1);

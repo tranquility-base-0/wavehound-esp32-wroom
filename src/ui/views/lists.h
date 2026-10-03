@@ -14,6 +14,7 @@ PcapPagination computePcapPagination(int *valid_indices, int &valid_count,
                                      int &total_pages);
 
 void drawMenu();
+void drawMenuKeypad(const char *buf, const char *err); // SELECT CH input UI
 void drawApScanner();
 void drawDeviceList();
 void drawProbeTracker();

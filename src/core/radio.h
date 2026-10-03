@@ -27,6 +27,26 @@ const int BLE_UPDATE_INTERVAL = 2000;
 // timing system, no BLE interleaving yet.
 const int CT_WIFI_WINDOW_MS = 5000;
 
+// Runtime chip capability: does the running SoC support the 5 GHz band?
+// Exists as groundwork for the eventual ESP32-C5 dual-band radio
+// implementation; the current ESP32 (WROOM) build does NOT support 5 GHz.
+// The result is detected once via the official Espressif chip-identification
+// API (esp_chip_info, esp_chip_info.h) and cached.
+bool radioHas5GHz();
+
+// Optional custom channel-hopping set (SELECT CH keypad). When
+// hop_count > 0 the hopper cycles hop_channels[] instead of the full
+// CHANNELS[] sweep; hop_count == 0 restores the default full sweep.
+extern uint8_t hop_channels[NUM_CHANNELS]; // channel numbers (1..13), deduped
+extern uint8_t hop_count;                  // 0 = default full CHANNELS[] sweep
+
+extern uint8_t hop_pos;                    // position within the custom set
+
+// Parse "1,6,11" / "1-13" / "1,6,11-13" into a deduped, in-range channel
+// list. Returns false (and writes nothing) on empty, malformed or
+// out-of-range input. Range is bounded by CHANNELS[] (see above).
+bool parseChannelList(const char *s, uint8_t *out, uint8_t *out_count);
+
 // Mutable radio state (defined in radio.cpp)
 extern RadioMode currentRadioMode;
 extern int current_ch_idx;

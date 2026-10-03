@@ -106,8 +106,7 @@ void setup() {
   tft.setRotation(1);
   ui_init_geometry();  // query width()/height() AFTER rotation is applied
   tft.fillScreen(TFT_BLACK);
-  drawChartHeader();
-  drawChartFooter();
+  drawMenu(); // boot lands in MAIN MENU > SUB-MENU (WIFI), capture paused
 
   // ==========================================
   // 3. INITIALIZE SD CARD (Crucial to do this BEFORE the sniffer starts!)
@@ -154,7 +153,15 @@ void setup() {
   esp_wifi_set_promiscuous_rx_cb(&sniffer_callback);
   esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
   Serial.println("[*] Sniffer ISR active.");
+
+  // Boot lands in the paused main menu: no scan runs until START SCAN
+  // (the existing menu -> real-time-screen path reopens everything).
+  pause_sniffing = true;
+  esp_wifi_set_promiscuous(false);
 }
+
+// Keypad debounce: tracks whether the finger is down between passes
+static bool touch_down_prev = false;
 
 void loop() {
   // ==========================================
@@ -181,7 +188,10 @@ void loop() {
 
   // 1. Check Touch inputs (State Controller)
   if (tft.getTouch(&t_x, &t_y)) {
-    should_render = handleTouchInputs(t_x, t_y);
+    should_render = handleTouchInputs(t_x, t_y, !touch_down_prev);
+    touch_down_prev = true;
+  } else {
+    touch_down_prev = false;
   }
 
   // 2. Run the Channel Hopper
