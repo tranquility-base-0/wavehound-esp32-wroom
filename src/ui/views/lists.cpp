@@ -87,6 +87,7 @@ void drawMenu() {
   //   CT:     SCAN, DEVICES, RF ENVS, BACK
   const char *rows[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
   int fox_row = -1;   // row holding FOXHUNT (may be gated on availability)
+  bool foxEnabled = false;
   int n_rows = 0;
   if (m == RADIO_WIFI) {
     rows[0] = scanLabel;
