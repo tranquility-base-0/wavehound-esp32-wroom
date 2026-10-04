@@ -98,7 +98,10 @@ void drawChartHeader() {
   }
   else if (currentRadioMode == RADIO_CHANNELS) {
     fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
-    bannerTail = "| SCANNING SPECTRUM";
+    // chPrefix already ends with '|' — a single space keeps the first glyph
+    // clear of the separator (flush text clipped into the pipe's pixel
+    // column); no stray '|' in the tail.
+    snprintf(bannerStr, sizeof(bannerStr), "%s SCANNING SPECTRUM", chPrefix);
     banner_done = true;
   }
   else if (currentRadioMode == RADIO_PCAP) {
@@ -113,7 +116,10 @@ void drawChartHeader() {
   }
   else if (currentRadioMode == RADIO_CT) {
     fmtChPrefix(chPrefix, sizeof(chPrefix), CHANNELS[current_ch_idx]);
-    bannerTail = "| CHASING TAIL";
+    // chPrefix already ends with '|' — a single space keeps the first glyph
+    // clear of the separator (flush text clipped into the pipe's pixel
+    // column); no stray '|' in the tail.
+    snprintf(bannerStr, sizeof(bannerStr), "%s CHASING TAIL", chPrefix);
     banner_done = true;
   }
   else { // RADIO_WIFI
