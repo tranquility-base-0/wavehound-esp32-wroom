@@ -52,6 +52,14 @@ static void fmtChPrefix(char *out, size_t n, int ch) {
   snprintf(out, n, (ch >= 100) ? "CH:%03d|" : "CH:%02d|", ch);
 }
 
+// "OTHER:xxx" legend block (drawTemporalLegend): count drawn flush against
+// the colon, so the block is variable-width -- 63 px ("OTHER:5") up to 81 px
+// ("OTHER:457", max real count 179). Wipe covers OTHER_X-2..420; 333 keeps
+// the widest text 6 px clear of the MENU button (420..475). The banner's
+// hop-list budget is OTHER_X-9 (banner starts at x=5), so the banner's right
+// edge (5+324=329) always stays 2 px clear of the wipe (331).
+constexpr int OTHER_X = 333;
+
 void drawChartHeader() {
   // 1. Gate the horizontal separator line so it doesn't cut through the PCAP terminal
   if (currentRadioMode != RADIO_PCAP) {
@@ -170,7 +178,7 @@ void drawChartHeader() {
       // Pixel-measured, token-complete truncation with '+' overflow:
       // whole tokens/ranges only, never mid-token; the '+' must itself fit;
       // if no token fits at all, a bare '+' is shown instead of overflowing.
-      const int budget = SCREEN_W - 75; // safe boundary (MENU zone)
+      const int budget = OTHER_X - 9; // stop clear of the OTHER legend wipe (banner starts at x=5)
 
       int i = 0;
       while (i < n) {
@@ -467,16 +475,17 @@ void drawTemporalLegend() {
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(COLOR_HOT_CHEST, TFT_BLACK);
 
-    // FIX 1: Start the wipe at y=0 to catch the top ascenders of the font.
-    // Height expanded to 20 to fully encapsulate the 9pt7b bounding box.
-    tft.fillRect(315, 0, 95, 20, TFT_BLACK);
+    // Wipe covers OTHER_X-2..420 -- around the variable-width text (up to
+    // 81 px) with a small margin, ending exactly at the MENU button (420) so
+    // the legend's periodic redraw can never erase it.
+    tft.fillRect(OTHER_X - 2, 0, 89, 20, TFT_BLACK);
 
     char otherStr[16];
-    // FIX 2: Force a 2-digit format so the string is always the exact same length
+    // Count drawn flush against the colon, unpadded ("OTHER:5", "OTHER:457").
     snprintf(otherStr, sizeof(otherStr), "OTHER:%d", otherCount);
 
     // The text draws starting at y=1, safely inside the wiped area!
-    tft.drawString(otherStr, 315, 1);
+    tft.drawString(otherStr, OTHER_X, 1);
 
     // 2. DRAW THE MAIN 6-DEVICE LEGEND (Now in the bottom position)
     int start_y = HEADER_HEIGHT - 6;
