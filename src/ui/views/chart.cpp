@@ -826,6 +826,92 @@ static void drawCtScreen() {
     }
 }
 
+// ==================== CT RF-ENV LIST SCREEN (SCREEN_ENV_LIST) ==========
+// Dedicated read-only RF-environment list behind the CT submenu's RF ENVS
+// button (analogous to the dedicated probe-tracker screen). Reuses this
+// file's ctFmtAge(), the newest-first hist-ring walk and the exact env-row
+// format of drawCtScreen(): open segment first (yellow, id + age only --
+// the open segment's class/mu/sigma live in ct.cpp file-statics), then
+// committed envs newest-first (id, duration, traffic mean, and the three
+// CVs: bytes / BSSID population / SSID population). Read-only over
+// ctState; no CT segmentation/commit algorithm is touched. Capture stays
+// gated while this screen is up -- entry deliberately does not resume it.
+void drawCtEnvList() {
+    tft.fillScreen(TFT_BLACK);
+
+    // ---- Header banner (list-screen convention) ----
+    uint8_t n_committed = 0;
+    for (int k = 0; k < MAX_CT_ENVIRONMENTS; k++)
+        if (ctState.hist[k].window_count != 0) n_committed++;
+    tft.setFreeFont(&UbuntuMono_B9pt7b);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(TFT_WHITE);
+    tft.fillRect(0, 0, SCREEN_W, 24, COLOR_HOT_CHEST);
+    char headerStr[40];
+    snprintf(headerStr, sizeof(headerStr), "RF ENVIRONMENTS (%u)",
+             (unsigned)n_committed);
+    tft.drawString(headerStr, 0, 5);
+    tft.drawLine(0, 26, SCREEN_W, 26, COLOR_HOT_CHEST);
+
+    // ---- Committed envs, newest -> oldest, off the hist ring ----
+    // (same walk as drawCtScreen()'s timeline bar)
+    const CtEnvRecord* envs[MAX_CT_ENVIRONMENTS];
+    int n_envs = 0;
+    for (int k = 0; k < MAX_CT_ENVIRONMENTS; k++) {
+        const CtEnvRecord* e =
+            &ctState.hist[(ctState.current_idx + MAX_CT_ENVIRONMENTS - k) % MAX_CT_ENVIRONMENTS];
+        if (e->window_count != 0) envs[n_envs++] = e;
+    }
+
+    uint32_t now_ms = millis();
+    tft.setFreeFont(&UbuntuMono_Regular9pt7b);
+    tft.setTextDatum(TL_DATUM);
+    int y = 32;
+    if (ctState.acc.first_seen != 0) {          // open segment row
+        char a1[6], row[32];
+        ctFmtAge((now_ms - ctState.acc.first_seen) / 1000, a1, sizeof(a1));
+        snprintf(row, sizeof(row), "E%u %s", (unsigned)ctState.env_seq, a1);
+        tft.setTextColor(TFT_YELLOW, TFT_BLACK);
+        tft.drawString(row, 2, y);
+        y += 20;
+    }
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    for (int i = 0; i < n_envs && y <= 280; i++) {
+        const CtEnvRecord* e = envs[i];
+        char a1[6], row[64];
+        ctFmtAge((e->last_seen - e->first_seen) / 1000, a1, sizeof(a1));
+        // Same row format as the live-screen RF-env band (Q8.8 traffic
+        // mean with 2 decimals + three scale-free CVs; mean == 0 -> "--").
+        const char* idc = (e->flags & CT_FLAG_CLASS_T) ? "T%u" : "E%u";
+        char id[8];
+        snprintf(id, sizeof(id), idc, (unsigned)e->env_id);
+        uint32_t means[3] = { e->byte_mean_q8kib, e->mu_b_q8, e->mu_s_q8 };
+        uint32_t stds[3]  = { e->byte_std_q8kib, e->sig_b_q8, e->sig_s_q8 };
+        int p = snprintf(row, sizeof(row), "%s %s %lu.%02luK", id, a1,
+                         (unsigned long)(means[0] >> 8),
+                         (unsigned long)(((means[0] & 0xFF) * 100) >> 8));
+        for (int q = 0; q < 3; q++) {
+            if (p >= (int)sizeof(row) - 14) break;   // room for worst " CV999%"
+            if (means[q] == 0)
+                p += snprintf(row + p, sizeof(row) - p, " CV--");
+            else {
+                unsigned cvq = (unsigned)(((uint64_t)stds[q] * 100) / means[q]);
+                if (cvq > 999) cvq = 999;
+                p += snprintf(row + p, sizeof(row) - p, " CV%u%%", cvq);
+            }
+        }
+        tft.drawString(row, 2, y);
+        y += 20;
+    }
+
+    // ---- Footer: BACK (center-third zone, other list screens' pattern) ----
+    tft.setTextColor(TFT_WHITE);
+    tft.drawLine(0, 285, SCREEN_W, 285, COLOR_HOT_CHEST);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("BACK", SCREEN_W / 2, 302);
+    tft.setTextDatum(TL_DATUM);
+}
+
 void drawWaterfallChart() {
     // 1. Gate the legends (CT replaces them with its own screen below)
     if (currentRadioMode != RADIO_PCAP && currentRadioMode != RADIO_CT) {

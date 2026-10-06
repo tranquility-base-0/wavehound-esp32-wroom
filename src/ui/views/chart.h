@@ -7,3 +7,4 @@ void drawChartFooter();
 void drawPersistentTopN();
 void drawTemporalLegend();
 void drawWaterfallChart();
+void drawCtEnvList();   // CT RF ENVS: dedicated read-only environment list

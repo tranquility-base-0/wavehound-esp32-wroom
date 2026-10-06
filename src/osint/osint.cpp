@@ -9,7 +9,8 @@
 
 ProbeSortMode currentProbeSortMode = PROBE_SORT_HITS;
 bool probe_sort_descending = true;
-ProbeRecordShared probeList[MAX_PROBE_SLOTS];
+// probeList is CT-owned storage (ctState.probe_list); the reference binding
+// lives in wavehound_state.cpp next to the ctState binding.
 SSIDNode ssidPool[TOTAL_SSID_POOL];
 int probe_current_page = 0;
 const int PROBES_PER_PAGE = 5;
@@ -349,8 +350,10 @@ int processProbeRequestShared(uint8_t* mac, const char* ssid, const char* known_
 void processPendingVendors() {
   // ==========================================
   // 1. OSINT Probe Tracker Resolution Logic
+  //    (CT-only: probe retention is CT-owned; nothing to resolve elsewhere)
   // ==========================================
-  for (int i = 0; i < MAX_PROBE_SLOTS; i++) {
+  if (currentRadioMode == RADIO_CT) {
+    for (int i = 0; i < MAX_PROBE_SLOTS; i++) {
     if (probeList[i].needs_lookup) {
       MacRecord dummy;
 
@@ -375,6 +378,7 @@ void processPendingVendors() {
 
       pause_sniffing = false; // Unlock
       break; // Only process one SD read per loop to prevent UI blocking
+    }
     }
   }
 
@@ -410,6 +414,9 @@ void processPendingVendors() {
   }
 }
 void runProbeCorrelationEngine() {
+    // Probe retention is CT-owned (architecture A): no tracker state is
+    // maintained outside CHASE TAIL, so there is nothing to correlate.
+    if (currentRadioMode != RADIO_CT) return;
     static unsigned long last_correlation_run = 0;
 
     if (millis() - last_correlation_run > 5000) {

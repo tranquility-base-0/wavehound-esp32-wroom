@@ -1175,10 +1175,11 @@ void sniffer_callback(void *buf, wifi_promiscuous_pkt_type_t type) {
   }
 
   // ==========================================
-  // PROBE REQUEST BOUNCER (Runs only in WIFI mode)
+  // PROBE REQUEST BOUNCER (CT-only: probe tracking lives under CHASE TAIL)
   // ==========================================
   // Check if Frame Control byte 0 is 0x40 (Subtype 4: Probe Request)
   if (payload[0] == 0x40) {
+    if (currentRadioMode != RADIO_CT) return; // arch A: no probe tracking outside CT
     // ==========================================
     // THE SMART BOUNCER & IE PARSER
     // ==========================================

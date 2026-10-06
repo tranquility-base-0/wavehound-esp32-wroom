@@ -1,4 +1,5 @@
 #include "wavehound_state.h"
+#include "osint/osint.h"   // probeList reference binding (type-checked vs osint.h decl)
 
 LiveBuffer liveBuf;
 SortBuffer sortBuf;
@@ -18,6 +19,7 @@ ApRecord (&sessionApData)[MAX_AP_RECORDS] = sessionBuf.sessionApData;
 ChannelRecord (&sessionChannelData)[MAX_CHANNEL_RECORDS] = sessionBuf.sessionChannelData;
 LeakHistoryEntry (&leakHistory)[MAX_LEAK_SLOTS] = sessionBuf.leakHistory;
 CTState (&ctState) = sessionBuf.ctState;
+ProbeRecordShared (&probeList)[MAX_PROBE_SLOTS] = ctState.probe_list;
 
 volatile uint16_t liveMacCount = 0;
 volatile uint32_t liveOtherBytes = 0;

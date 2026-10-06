@@ -350,6 +350,28 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
           delay(300);
         };
 
+        // PROBE REQUESTS (CT only): restored CT probe-tracker entry (the
+        // row 8f02e48 dropped during the submenu reorder). Read-only list:
+        // entering it does NOT reopen the capture gate -- the gate stays
+        // exactly as the menu left it (paused).
+        auto probeAction = [&]() {
+          ch_keypad_open = false;
+          currentState = SCREEN_PROBE_TRACKER;
+          probe_current_page = 0;
+          drawProbeTracker();
+          delay(300);
+        };
+
+        // RF ENVS (CT only): dedicated read-only RF-environment list.
+        // Deliberately does NOT use scanAction semantics -- entering the
+        // list leaves the capture gate exactly as the menu left it.
+        auto envListAction = [&]() {
+          ch_keypad_open = false;
+          currentState = SCREEN_ENV_LIST;
+          drawCtEnvList();
+          delay(300);
+        };
+
         // SELECT AP (WIFI only): AP scanner, verbatim.
         auto selectApAction = [&]() {
           ch_keypad_open = false;
@@ -396,7 +418,9 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
         } else { // RADIO_CT
           if      (uiHit(SUBMENU_BTN[0], t_x, t_y)) scanAction();
           else if (uiHit(SUBMENU_BTN[1], t_x, t_y)) devicesAction();
-          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) scanAction(); // RF ENVS -> CT real-time screen
+          else if (uiHit(SUBMENU_BTN[2], t_x, t_y)) envListAction(); // RF ENVS -> dedicated env list
+          else if (uiHit(SUBMENU_BTN[3], t_x, t_y)) probeAction(); // PROBE REQUESTS -> CT probe tracker
+          else if (uiHit(SUBMENU_BTN[4], t_x, t_y)) selectChAction(); // SELECT CH -> shared channel keypad
         }
       }
       } // end not-keypad-open
@@ -445,6 +469,18 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
           drawMenu();
           delay(300);
         }
+      }
+    }
+
+    // ==========================================
+    // 3b. CT RF-ENV LIST TOUCH LOGIC (read-only screen: BACK only)
+    // ==========================================
+    else if (currentState == SCREEN_ENV_LIST) {
+      if (t_y > 285 && t_x >= SCREEN_W / 3 && t_x <= SCREEN_W * 2 / 3) {
+        currentState = SCREEN_MENU;
+        menu_selection = (int)currentRadioMode;
+        drawMenu();
+        delay(300);
       }
     }
 

@@ -1,6 +1,7 @@
 #include "radio.h"
 #include "esp_chip_info.h" // official chip-identification API (radioHas5GHz)
 #include "osint/vendor.h"
+#include "osint/osint.h"  // initProbeTracker() for the CT-entry retention re-init
 #include "capture/capture.h"
 #include "modes/ble.h"
 #include "UbuntuMono_Regular9pt7b.h"
@@ -356,6 +357,13 @@ void switchRadioMode(RadioMode targetMode) {
   }
 
   currentRadioMode = targetMode;
+
+  // CT probe retention re-init: the blanket union wipe above zeroed
+  // ctState.probe_list, but the tracker's non-zero sentinels (chain heads,
+  // rssi floor, vendor defaults, rotation counters) must be restored before
+  // CT resumes accumulating. initProbeTracker() also resets the global
+  // ssidPool so no stale first_ssid_idx chains survive the entry.
+  if (targetMode == RADIO_CT) initProbeTracker();
 
   // 4. Open the gate!
   pause_sniffing = false;

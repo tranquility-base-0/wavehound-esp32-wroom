@@ -156,6 +156,30 @@ struct CtEnvironment {
   uint8_t  reserved;
 };  // 1,360 B, no padding (verified: host g++ layout check)
 
+struct ProbeRecordShared {
+  // --- 8-byte variables ---
+  uint64_t pnl_hash;        // 64-bit SSID Bloom filter
+
+  // --- 4-byte variables ---
+  uint32_t hardware_hash;   // 32-bit IE tag fingerprint
+  unsigned long first_seen;
+  unsigned long last_seen;
+  int first_ssid_idx;
+  float smoothedDistance;
+
+  // --- 2-byte variables ---
+  uint16_t hits;
+
+  // --- 1-byte arrays and variables ---
+  uint8_t mac[6];
+  char vendor[25];
+  uint8_t ssid_count;
+  uint8_t generation;       // no NSDMI: keeps SessionBuffer union trivially
+  bool needs_lookup;        // constructible; both are set in initProbeTracker()
+  int8_t rssi;
+  uint8_t mac_rotations;  // Tracks how many times this device has spoofed a new MAC
+};
+
 struct CTState {
   CtEnvRecord hist[MAX_CT_ENVIRONMENTS]; // immutable committed-environment
                                          // metrics; hist[current_idx] = newest
@@ -170,9 +194,10 @@ struct CTState {
   uint8_t  reserved[2];
   CtPersistTable persist;           // promoted persistent devices (owned state)
   CtPendPool   pend;                // seen-once pending pool (owned state)
-};  // 8,768 B — fits the union member with headroom to spare (the union is
-    // still sized by MacRecord[185] = 14,800 B; the static_assert below
-    // keeps guarding the boundary)
+  ProbeRecordShared probe_list[MAX_PROBE_SLOTS]; // CT-owned probe tracker
+                              // retention (architecture A: probes are only
+                              // tracked while RADIO_CT is active)
+};  // 12,368 B — fits the union member with headroom to spare
 
 struct BssidCacheEntry {
     uint32_t last_seen; // 4 bytes (Largest first)
@@ -277,35 +302,11 @@ enum LeakSortMode {
 
 enum UIState { SCREEN_CHART, SCREEN_MENU, SCREEN_AP_SCAN,
    SCREEN_DEVICE_LIST, SCREEN_PROBE_TRACKER,
-   SCREEN_FOXHUNT, SCREEN_LEAK_LIST };
+   SCREEN_FOXHUNT, SCREEN_LEAK_LIST, SCREEN_ENV_LIST };
 
 struct SSIDNode {
   char text[33];
   int next_node_idx = -1;                // Index of the next SSID for this device (-1 if end)
-};
-
-struct ProbeRecordShared {
-  // --- 8-byte variables ---
-  uint64_t pnl_hash;        // 64-bit SSID Bloom filter
-
-  // --- 4-byte variables ---
-  uint32_t hardware_hash;   // 32-bit IE tag fingerprint
-  unsigned long first_seen;
-  unsigned long last_seen;
-  int first_ssid_idx;
-  float smoothedDistance;
-
-  // --- 2-byte variables ---
-  uint16_t hits;
-
-  // --- 1-byte arrays and variables ---
-  uint8_t mac[6];
-  char vendor[25];
-  uint8_t ssid_count;
-  uint8_t generation = 0;
-  bool needs_lookup = false;
-  int8_t rssi;
-  uint8_t mac_rotations;  // Tracks how many times this device has spoofed a new MAC
 };
 
 enum RadioMode { RADIO_WIFI, RADIO_BLE, RADIO_AP, RADIO_CHANNELS, RADIO_PCAP,
@@ -433,12 +434,11 @@ constexpr size_t union_size = (max_size_3 > max_size_2) ? max_size_3 : max_size_
 constexpr size_t static_non_union =
     (union_size * 3) +                                        // live + sort + session
     (sizeof(OUICache)          * OUI_CACHE_SIZE)      +
-    (sizeof(ProbeRecordShared) * MAX_PROBE_SLOTS)     +
-    (sizeof(SSIDNode)          * TOTAL_SSID_POOL)     +
-    (sizeof(BeaconEntry)       * MAX_BEACON_DICT);
+    (sizeof(SSIDNode)          * TOTAL_SSID_POOL)     +   // probe SSID pool (probe
+    (sizeof(BeaconEntry)       * MAX_BEACON_DICT);        // records are CT-owned,
+                                                          // inside CTState)
 
 constexpr size_t osint_layer_size =
-    (sizeof(ProbeRecordShared) * MAX_PROBE_SLOTS) +
     (sizeof(SSIDNode)          * TOTAL_SSID_POOL) +
     (sizeof(BeaconEntry)       * MAX_BEACON_DICT);
 

@@ -6,7 +6,10 @@
 // probe tracker globals
 extern ProbeSortMode currentProbeSortMode;
 extern bool probe_sort_descending;
-extern ProbeRecordShared probeList[MAX_PROBE_SLOTS];
+// CT-owned probe tracker retention (lives inside CTState / sessionBuf);
+// bound once in wavehound_state.cpp so every existing probeList[...] site
+// keeps compiling unchanged.
+extern ProbeRecordShared (&probeList)[MAX_PROBE_SLOTS];
 extern SSIDNode ssidPool[TOTAL_SSID_POOL];
 extern int probe_current_page;
 extern const int PROBES_PER_PAGE;

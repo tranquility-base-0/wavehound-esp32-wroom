@@ -84,7 +84,7 @@ void drawMenu() {
   //   AP:     SCAN, DEVICES, FOXHUNT, SELECT CH, BACK
   //   CHANNELS: SCAN, CHANNELS, BACK
   //   PCAP:   SCAN, PACKETS, SELECT CH, BACK
-  //   CT:     SCAN, DEVICES, RF ENVS, BACK
+  //   CT:     SCAN, DEVICES, RF ENVS, PROBE REQUESTS, SELECT CH, BACK
   const char *rows[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
   int fox_row = -1;   // row holding FOXHUNT (may be gated on availability)
   bool foxEnabled = false;
@@ -120,7 +120,9 @@ void drawMenu() {
     rows[0] = scanLabel;
     rows[1] = "DEVICES";
     rows[2] = "RF ENVS";
-    n_rows = 3;
+    rows[3] = "PROBE REQUESTS";
+    rows[4] = "SELECT CH";
+    n_rows = 5;
   }
 
   for (int k = 0; k < n_rows; k++) {

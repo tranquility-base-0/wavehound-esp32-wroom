@@ -237,6 +237,8 @@ void loop() {
       drawApScanner();
     } else if (currentState == SCREEN_PROBE_TRACKER) {
       drawProbeTracker();
+    } else if (currentState == SCREEN_ENV_LIST) {
+      drawCtEnvList();
     }
     // Do NOT add SCREEN_LEAK_LIST here. It updates itself asynchronously!
 
