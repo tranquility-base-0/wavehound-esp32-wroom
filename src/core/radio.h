@@ -18,13 +18,17 @@
 // Radio config (const, one copy per TU)
 const int CHANNELS[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13};
 const int NUM_CHANNELS = 13;
+// 300 ms: the hop dwell floor the F1 derivation never goes below, and the
+// BLE-mode hop interval. Wi-Fi-family modes (WIFI/NETWORKS/CHANNELS/PCAP/CT)
+// derive their dwell from the selected channel count instead (see ct.h).
 const int HOP_INTERVAL = 300;
 const int LOCKED_UPDATE_INTERVAL = 2000;
 const int BLE_UPDATE_INTERVAL = 2000;
 
-// CT (RADIO_CT) v0.1: fixed Wi-Fi observation window. A window is a plain
-// observation interval spanning the existing CT channel sweep — no second
-// timing system, no BLE interleaving yet.
+// CT (RADIO_CT) v0.1: fixed Wi-Fi observation window. Superseded by the F1
+// timing foundation (modes/ct.cpp): the live CT window is now DERIVED per
+// channel selection (~5 s = k complete sweeps, dwell >= 300 ms); this
+// constant remains the ~5 s target the derivation is calibrated against.
 const int CT_WIFI_WINDOW_MS = 5000;
 
 // Runtime chip capability: does the running SoC support the 5 GHz band?
@@ -46,6 +50,11 @@ extern uint8_t hop_pos;                    // position within the custom set
 // list. Returns false (and writes nothing) on empty, malformed or
 // out-of-range input. Range is bounded by CHANNELS[] (see above).
 bool parseChannelList(const char *s, uint8_t *out, uint8_t *out_count);
+
+// Apply a validated selected-channel set to the radio (hop list + position +
+// hardware channel) with the current_ch_idx = channel-1 sync invariant held.
+// Used by CT's boundary-deferred SELECT CH apply; see modes/ct.cpp.
+void radio_apply_channel_set(const uint8_t *chans, uint8_t cnt);
 
 // Mutable radio state (defined in radio.cpp)
 extern RadioMode currentRadioMode;

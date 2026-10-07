@@ -15,6 +15,9 @@
 #define CT_DIAG_TRIG     1   // [CT-TRIG] channel crossings (POP/CHURN/TURN)
 #define CT_DIAG_PERSIST  1   // [CT-PERSIST] promotions/evictions
 #define CT_DIAG_STEPS    0   // [CT-STEP3/4.1/4.2/5] window telemetry
+#define CT_DIAG_TIMING   1   // [CT-TIMING] TEMPORARY: prints the F1 derivation
+                            // at every ct_timing_apply() run. Measurement-only.
+                            // Remove after diagnosis.
 
 // ---- Step 3 observation accumulator (Core-0 feeder) ----
 //
@@ -72,8 +75,9 @@ static bool ct_have_obs = false;
 //                   construction: it measures the untracked world.
 //   ct_chans_mask — per-window channels-visited mask, maintained by Core 1
 //                   (Core-1 context) by watching current_ch_idx transitions
-//                   every loop tick. A window with cov < 13 did not cover a
-//                   full sweep (hopper stalled / screen state) — a coverage
+//                   every loop tick. A window with cov < configured-set did
+//                   not cover a full sweep (hopper stalled / screen state) —
+//                   a coverage
 //                   gap, not an environment reading.
 static uint16_t ct_rej_count = 0;
 static uint16_t ct_chans_mask = 0;
@@ -290,7 +294,115 @@ void ct_observe_bssid(const uint8_t *bssid, const char *ssid) {
 // Window-timing state is file-local Core-1 scratch (the last_queue_warn_ms
 // pattern): no new persistent SRAM, no CTState layout change.
 static uint32_t ct_window_start_ms = 0;
+static uint32_t ct_last_hop_ms = 0;   // millis() of the last counted transition
 static bool ct_window_running = false;
+
+// ---- F1 timing foundation (CT-local, Core-1 owned) ----
+// The CT statistical window is an integer number of complete sweeps with a
+// ~5000 ms target; the dwell is derived per selection (>= 300 ms floor) so
+// that every selected channel receives exactly k identical dwell slots per
+// window. The window CLOSES on complete-sweep boundaries (hop transitions
+// counted by the per-tick channel watcher below), not on a free-running
+// wall clock; a wall-clock failsafe covers hopper stalls (CT hopping stops
+// off the chart screen, and CT is always capture-paused there, so a
+// failsafe close is discarded by the existing paused-window validity rule).
+// With a single selected channel the hop index never changes, so that case
+// falls back to the plain wall clock (every window is trivially complete).
+static const uint32_t CT_TIMING_TARGET_MS = 5000;
+static const uint16_t CT_TIMING_DWELL_FLOOR_MS = 300;
+static const uint32_t CT_WINDOW_FAILSAFE_MS = 2000;
+uint16_t ct_dwell_ms = CT_TIMING_DWELL_FLOOR_MS;  // derived dwell (hopper reads)
+static uint16_t ct_timing_sweeps = 1;    // k: complete sweeps per window
+static uint32_t ct_window_ms = CT_TIMING_TARGET_MS; // k * N * dwell
+static uint16_t ct_window_hops = 0;      // k * N; 0 = wall-clock close (N==1)
+static uint16_t ct_hop_transitions = 0;  // hops since the window opened
+
+// Boundary-deferred SELECT CH: stashed by the UI, applied at the next
+// complete-window close (an environment boundary under the close fence).
+static uint8_t ct_reselect_chans[NUM_CHANNELS];
+static uint8_t ct_reselect_count = 0;
+static bool ct_reselect_pending = false;
+
+// Window-boundary render request for the CT waterfall: set at EVERY window
+// close (valid or invalid, so the visible timeline stays uniformly time-
+// based), consumed by the main loop via ct_take_render_request(). One
+// pending request yields at most one render; the boolean cannot queue.
+static bool ct_render_pending = false;
+
+// Pure F1 integer derivation (single source of truth for CT and the non-CT
+// Wi-Fi-family hopper): k = max(1, floor(T/(N*floor_dwell)));
+// dwell = round(T/(k*N)) >= floor by construction.
+// Design (2026-10-06, restored): the statistical window stays ~5 s; sweeps
+// pack k revisits per window so every channel receives the SAME number of
+// visits per window, with the visit count maximized s.t. dwell >= 300 ms.
+// The visible waterfall is paced separately (~5 s per column), so sweep
+// length no longer sets the visible time scale.
+static void ct_derive_timing(uint16_t n, uint16_t *k_out, uint16_t *dwell_out) {
+  uint16_t k = (uint16_t)(CT_TIMING_TARGET_MS / ((uint32_t)n * CT_TIMING_DWELL_FLOOR_MS));
+  if (k < 1) k = 1;
+  // Round-to-nearest dwell; k*n*300 <= target by construction of k, so the
+  // rounded dwell is >= the 300 ms floor. Window deviation from the target
+  // is < 0.5 ms per dwell slot (<= 16 slots => < 0.2%).
+  uint32_t d = (CT_TIMING_TARGET_MS + ((uint32_t)k * n) / 2) / ((uint32_t)k * n);
+  if (d < CT_TIMING_DWELL_FLOOR_MS) d = CT_TIMING_DWELL_FLOOR_MS; // defensive
+  *k_out = k;
+  *dwell_out = (uint16_t)d;
+}
+
+void ct_timing_apply() {
+  uint16_t n = (hop_count > 0) ? hop_count : (uint16_t)NUM_CHANNELS;
+  uint16_t k, d;
+  ct_derive_timing(n, &k, &d);
+  ct_dwell_ms = d;
+  ct_timing_sweeps = k;
+  ct_window_ms = (uint32_t)k * n * d;
+  ct_window_hops = (n >= 2) ? (uint16_t)(k * n) : 0;
+#if CT_DIAG_TIMING
+  Serial.printf("[CT-TIMING] N=%u k=%u dwell=%u window=%u hops=%u\n",
+                (unsigned)n, (unsigned)ct_timing_sweeps,
+                (unsigned)ct_dwell_ms, (unsigned)ct_window_ms,
+                (unsigned)ct_window_hops);
+#endif
+}
+
+void ct_request_reselect(const uint8_t *chans, uint8_t cnt) {
+  if (chans == nullptr || cnt == 0 || cnt > NUM_CHANNELS) return;
+  memcpy(ct_reselect_chans, chans, cnt);
+  ct_reselect_count = cnt;
+  ct_reselect_pending = true;
+}
+
+// F1-derived dwell for a set of n channels: the system-wide hopper rule for
+// every Wi-Fi-family mode (CT, WIFI, NETWORKS, CHANNELS, PCAP) so one sweep
+// is ~5 s regardless of N. Public so diagnostics report the same value the
+// hopper will use.
+uint16_t ct_derived_dwell(uint16_t n) {
+  uint16_t k, d;
+  ct_derive_timing(n, &k, &d);
+  return d;
+}
+
+uint16_t ct_hop_interval() {
+  // System-wide F1 rule: every Wi-Fi-family hopping mode derives its dwell
+  // (sweep ~ 5 s). BLE keeps the fixed HOP_INTERVAL; locked modes never hop.
+  // CT additionally persists its derivation in ct_dwell_ms (statistical
+  // window state) and must match the shared helper — it does by construction.
+  if (currentRadioMode == RADIO_CT) return ct_dwell_ms;
+  if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP ||
+      currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP) {
+    uint16_t n = (hop_count > 0) ? hop_count : (uint16_t)NUM_CHANNELS;
+    return ct_derived_dwell(n);
+  }
+  return (uint16_t)HOP_INTERVAL;
+}
+
+bool ct_take_render_request() {
+  // Return-and-clear of the window-boundary render request. CT runs on the
+  // single Core-1 loop context, so read-then-clear is atomic here.
+  bool pending = ct_render_pending;
+  ct_render_pending = false;
+  return pending;
+}
 
 // Commit the open segment: copy the accumulator into the next history slot
 // with its final provisional E/T class, advance the global segment index,
@@ -586,24 +698,54 @@ void processCtData() {
     ct_probe_hit_mask = 0;    // leak into the first window after re-entry
     ct_reset_segment_stats();
     ct_window_running = false;
+    ct_hop_transitions = 0;   // no stale hop count may pre-load the next session
+    ct_render_pending = false; // a queued render request dies with the session
+    ct_reselect_pending = false; // a queued set change dies with the session
     return;
   }
 
   // Per-tick channel-coverage tracking (Core-1 context): record every channel
   // the radio lands on during the open window. A closed window whose mask
-  // covers fewer than 13 channels did not observe a full sweep.
+  // covers fewer than the configured channel set did not observe a full
+  // sweep. The transition count is also the F1 hop-clock: a window closes
+  // after exactly k*N complete dwell slots (one complete sweep, k times).
   if (current_ch_idx != ct_last_ch) {
     ct_last_ch = current_ch_idx;
     ct_chans_mask |= (uint16_t)1 << current_ch_idx;
+    ct_hop_transitions++;
+    ct_last_hop_ms = millis();
   }
 
   if (!ct_window_running) {
     ct_window_start_ms = millis();
+    ct_last_hop_ms = millis();
     ct_window_running = true;
+    ct_hop_transitions = 0;
     return;
   }
 
-  if (millis() - ct_window_start_ms < CT_WIFI_WINDOW_MS)
+  // F1 window close: complete-sweep boundary (k*N hop transitions), not a
+  // free-running wall clock. With one selected channel the hop index never
+  // changes (ct_window_hops == 0), so that case closes on the derived wall
+  // clock -- every window there is trivially complete.
+  uint32_t win_elapsed = millis() - ct_window_start_ms;
+  bool win_boundary = (ct_window_hops == 0)
+      ? (win_elapsed >= ct_window_ms)
+      : (ct_hop_transitions >= ct_window_hops);
+  // Failsafe: CT hopping stalls off the chart screen (menu / list screens)
+  // and CT is always capture-paused there, so a late close is discarded by
+  // the existing paused-window validity rule -- the same discard semantics
+  // the old wall-clock close had for menu-visit windows.
+  // The stall is measured from the LAST OBSERVED CHANNEL TRANSITION, not
+  // from window age: a long blocking operation mid-window (e.g. an SD mac
+  // vendor lookup) pauses transitions without ending the session, and an
+  // age-based failsafe closed the window mid-sweep, permanently shifting
+  // the sweep phase (waterfall columns drifting onto mid-set channels).
+  // Normal transition gaps are ~dwell (<= 556 ms), so only a genuine
+  // multi-second stall with no fires trips this.
+  bool win_failsafe =
+      (millis() - ct_last_hop_ms >= ct_window_ms + CT_WINDOW_FAILSAFE_MS);
+  if (!win_boundary && !win_failsafe)
     return;
 
   // Validity is decided BEFORE the fence is raised: a window that closes
@@ -629,6 +771,9 @@ void processCtData() {
   uint16_t chans = ct_chans_mask;
   ct_chans_mask = 0;
   uint8_t cov = (uint8_t)__builtin_popcount(chans);
+  // Coverage denominator: the configured observation set, not the physical
+  // band (F1 guarantees complete sweeps of that set within every window).
+  uint8_t cov_max = (hop_count > 0) ? hop_count : (uint8_t)NUM_CHANNELS;
   // Byte-traffic snapshot: unconditional (mirrors the mask snapshots). The
   // RX callback is gated on pause_sniffing, so a paused window contributes
   // no bytes. A window that closes INVALID discards its snapshot: the EWMA
@@ -936,9 +1081,9 @@ void processCtData() {
         snprintf(rb, sizeof(rb), "n/a"); snprintf(rs, sizeof(rs), "n/a");
         snprintf(thr, sizeof(thr), "n/a");
       }
-      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/13 mean=%s range=%s/%s thr=%s bytes=%u.%02uKiB\n",
+      Serial.printf("[CT-STEP4.2] win=%u valid=Y obs=%u rej=%u cov=%u/%u mean=%s range=%s/%s thr=%s bytes=%u.%02uKiB\n",
                     (unsigned)win, (unsigned)obs, (unsigned)rej, (unsigned)cov,
-                    mb, rb, rs, thr,
+                    (unsigned)cov_max, mb, rb, rs, thr,
                     (unsigned)(snap_bmean >> 8),
                     (unsigned)(((snap_bmean & 0xFF) * 100) >> 8));
     }
@@ -971,13 +1116,41 @@ void processCtData() {
     // Invalid (paused) window: contributes nothing — no statistics, no
     // evidence, no classification change, no commit, no window_count.
 #if CT_DIAG_STEPS
-    Serial.printf("[CT-STEP4.2] win=%u valid=N obs=0 rej=%u cov=%u/13 mean=n/a range=n/a/n/a\n",
+    Serial.printf("[CT-STEP4.2] win=%u valid=N obs=0 rej=%u cov=%u/%u mean=n/a range=n/a/n/a\n",
                   (unsigned)(ctState.acc.window_count + 1), (unsigned)rej,
-                  (unsigned)cov);
+                  (unsigned)cov, (unsigned)cov_max);
 #endif // CT_DIAG_STEPS
     // ---- END TEMPORARY ----
   }
 
+  // ---- Boundary-deferred SELECT CH apply (environment boundary) ----
+  // The capture fence is still up here: the safe point to rewrite the radio
+  // hop set. The current environment is closed with the normal commit
+  // mechanism (a set change IS an environment boundary); if no valid window
+  // ever folded into it (e.g. the quorum already committed during this
+  // window's fold, or nothing was observed), there is nothing to commit —
+  // clear the open statistics instead. The persist table, pending pool, and
+  // environment history are deliberately untouched: this is an environment
+  // boundary, not a session reset.
+  if (ct_reselect_pending) {
+    radio_apply_channel_set(ct_reselect_chans, ct_reselect_count);
+    ct_timing_apply(); // re-derive k / dwell / window for the new set
+    if (ctState.acc.window_count > 0)
+      ct_commit_segment();
+    else
+      ct_reset_segment_stats();
+    // Re-anchor the watcher: the radio now sits on the new set's first
+    // channel; seed its coverage bit without counting a spurious hop.
+    ct_last_ch = current_ch_idx;
+    ct_chans_mask |= (uint16_t)1 << current_ch_idx;
+    ct_reselect_pending = false;
+  }
+  ct_hop_transitions = 0;
+  // Window complete (valid or invalid): request exactly one waterfall
+  // column. The existing CT delta logic turns the first render after the
+  // zero-roll into the full-window bar; no metric special-casing needed.
+  ct_render_pending = true;
   pause_sniffing = was_paused; // RESTORE: do not clear a menu-held pause
   ct_window_start_ms = millis();
+  ct_last_hop_ms = millis();
 }

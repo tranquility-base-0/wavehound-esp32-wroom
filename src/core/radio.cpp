@@ -2,6 +2,7 @@
 #include "esp_chip_info.h" // official chip-identification API (radioHas5GHz)
 #include "osint/vendor.h"
 #include "osint/osint.h"  // initProbeTracker() for the CT-entry retention re-init
+#include "modes/ct.h"     // ct_dwell_ms / ct_timing_apply(): CT F1 timing foundation
 #include "capture/capture.h"
 #include "modes/ble.h"
 #include "UbuntuMono_Regular9pt7b.h"
@@ -292,6 +293,23 @@ bool parseChannelList(const char *s, uint8_t *out, uint8_t *out_count) {
   return true;
 }
 
+// Apply a validated channel set to the radio in one fenced-shaped step:
+// hop list, position, hardware channel, and the current_ch_idx sync
+// invariant (CHANNELS[current_ch_idx] attribution and CT's per-window
+// channel mask both index by current_ch_idx = channel - 1). CT calls this
+// at a statistical-window boundary while its capture fence is already up.
+void radio_apply_channel_set(const uint8_t *chans, uint8_t cnt) {
+  if (chans == nullptr || cnt == 0) return;
+  memcpy(hop_channels, chans, cnt);
+  hop_count = cnt;
+  // Arm at the LAST slot: the hopper pre-increments before tuning, so the
+  // first fire after this apply wraps to slot 0 (the lowest channel), which
+  // is where the radio is already parked below.
+  hop_pos = cnt - 1;
+  current_ch_idx = hop_channels[0] - 1; // CHANNELS[] = 1..13
+  esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
+}
+
 void switchRadioMode(RadioMode targetMode) {
   if (currentRadioMode == targetMode) return;
 
@@ -316,6 +334,11 @@ void switchRadioMode(RadioMode targetMode) {
   // above skips this whole block).
   hop_count = 0;
   hop_pos = 0;
+  // Arm the sweep to START AT THE LOWEST CHANNEL: the hopper pre-increments
+  // before tuning, so the armed position is one before CHANNELS[0]; the
+  // first fire wraps to channel 1. Locked modes keep their own channel
+  // state (the locked branch never hops).
+  if (!target_locked) current_ch_idx = NUM_CHANNELS - 1;
 
   // 3. HARDWARE ANTENNA TOGGLE
   // RADIO_CT reuses the Wi-Fi promiscuous/capture initialization path
@@ -364,6 +387,10 @@ void switchRadioMode(RadioMode targetMode) {
   // CT resumes accumulating. initProbeTracker() also resets the global
   // ssidPool so no stale first_ssid_idx chains survive the entry.
   if (targetMode == RADIO_CT) initProbeTracker();
+  // CT F1 timing: derive dwell/window for the freshly selected channel set
+  // (hop_count was reset above, so CT entry always starts from the full
+  // sweep: k=1, dwell=385, window=5005 for the default 13-channel set).
+  if (targetMode == RADIO_CT) ct_timing_apply();
 
   // 4. Open the gate!
   pause_sniffing = false;
@@ -382,6 +409,11 @@ bool updateRadioHopper() {
     // Include SCREEN_LEAK_LIST so the radio keeps scanning while the leak list is on screen.
     if (currentState == SCREEN_CHART || currentState == SCREEN_FOXHUNT || currentState == SCREEN_LEAK_LIST) {
         static unsigned long lastTimer = 0;
+        // Wall-clock waterfall column pacing for the non-CT Wi-Fi-family
+        // modes: one column per ~5 s regardless of N and sweep length
+        // (CT paces on its statistical-window close instead). Reset by
+        // request only; carries across mode switches by design.
+        static unsigned long last_col_ms = 0;
 
         tft.setTextWrap(false);
 
@@ -392,7 +424,7 @@ bool updateRadioHopper() {
         // its environment signal is defined over a full channel sweep.
         if (currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_CHANNELS || currentRadioMode == RADIO_PCAP || currentRadioMode == RADIO_CT) {
             if (!target_locked) {
-                if (millis() - lastTimer > HOP_INTERVAL) {
+                if (millis() - lastTimer > ct_hop_interval()) {
                     lastTimer = millis();
                     uint8_t hop_ch; // channel being applied this tick
 
@@ -407,12 +439,31 @@ bool updateRadioHopper() {
                         hop_pos = (hop_pos + 1) % hop_count;
                         hop_ch = hop_channels[hop_pos];
                         current_ch_idx = hop_ch - 1; // CHANNELS[] = 1..13
-                        if (hop_pos == 0) trigger_render = true;
+                        // Column pacing (non-CT): fire at the SWEEP BOUNDARY
+                        // once ~5 s of wall time has elapsed, so the bar
+                        // always lands on the same channel (the set's lowest)
+                        // AND the cadence stays ~5 s regardless of sweep
+                        // length. A pure wall-clock tick drifts against the
+                        // sweep (renders make sweeps run slightly long) and
+                        // the bar's landing channel slides around the set.
+                        if (hop_pos == 0 && currentRadioMode != RADIO_CT &&
+                            millis() - last_col_ms >= (unsigned long)CT_WIFI_WINDOW_MS) {
+                            last_col_ms = millis();
+                            trigger_render = true;
+                        }
                     } else {
                         current_ch_idx++;
                         if (current_ch_idx >= NUM_CHANNELS) {
                             current_ch_idx = 0;
-                            trigger_render = true; // Replaces should_render = true
+                            // Same boundary-anchored column pacing for the
+                            // default full sweep (fires at the channel-1
+                            // wrap, ~5 s or one sweep apart, whichever is
+                            // later). CT is excluded: window-paced instead.
+                            if (currentRadioMode != RADIO_CT &&
+                                millis() - last_col_ms >= (unsigned long)CT_WIFI_WINDOW_MS) {
+                                last_col_ms = millis();
+                                trigger_render = true;
+                            }
                         }
                         hop_ch = CHANNELS[current_ch_idx];
                     }

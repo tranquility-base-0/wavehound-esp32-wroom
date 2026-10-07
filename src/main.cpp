@@ -185,6 +185,10 @@ void loop() {
 
   uint16_t t_x = 0, t_y = 0;
   bool should_render = false;
+  // CT waterfall advances on its statistical-window boundary, not per
+  // sweep: consume the window-close render request here (CT's delta logic
+  // turns the first render after the zero-roll into the full-window bar).
+  should_render |= ct_take_render_request();
 
   // 1. Check Touch inputs (State Controller)
   if (tft.getTouch(&t_x, &t_y)) {

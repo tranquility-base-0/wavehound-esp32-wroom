@@ -11,10 +11,15 @@
 #include "modes/ap_scanner.h"
 #include "modes/ble.h"
 #include "modes/channel_scanner.h"
+#include "modes/ct.h"   // ct_request_reselect(): boundary-deferred CT SELECT CH
 #include "osint/osint.h"
 #include "UbuntuMono_Regular9pt7b.h"
 #include <string.h>
 #include <stdio.h>
+
+#define WIFI_TIMING_DIAG 1  // TEMPORARY: [WIFI-TIMING] sweep-derivation print at
+                            // each non-CT channel-set apply. Remove after the
+                            // timing/render diagnosis.
 
 static void forceSessionSort() {
   if (currentRadioMode == RADIO_WIFI) {
@@ -193,16 +198,36 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
               ch_err = "INVALID (1-13)";
               ch_keypad_echo();
             } else {
-              memcpy(hop_channels, tmp, cnt);
-              hop_count = cnt;
-              hop_pos = 0;
-              // NETWORKS/PCAP: the old cycle button owned target lock; a
-              // confirmed hop regime must be free to run, so unlock.
-              // WIFI: target_locked is the AP-target lock (SELECT AP) --
-              // left untouched; the regime applies when hopping resumes.
-              if (currentRadioMode != RADIO_WIFI) target_locked = false;
-              if (!target_locked)
-                esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
+              if (currentRadioMode == RADIO_CT) {
+                // CT: boundary-deferred apply. The CT engine applies the
+                // set at the NEXT complete-window close (an environment
+                // boundary, under its close fence) and re-derives its
+                // dwell/window there. No radio state is touched here.
+                ct_request_reselect(tmp, cnt);
+              } else {
+                memcpy(hop_channels, tmp, cnt);
+                hop_count = cnt;
+                // Arm at the LAST slot: the hopper pre-increments before
+                // tuning, so the first fire wraps to slot 0 (the lowest
+                // channel) — the channel the radio is parked on below.
+                hop_pos = cnt - 1;
+                current_ch_idx = hop_channels[0] - 1; // stamp-sync invariant
+                // NETWORKS/PCAP: the old cycle button owned target lock; a
+                // confirmed hop regime must be free to run, so unlock.
+                // WIFI: target_locked is the AP-target lock (SELECT AP) --
+                // left untouched; the regime applies when hopping resumes.
+                if (currentRadioMode != RADIO_WIFI) target_locked = false;
+                if (!target_locked)
+                  esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
+#if WIFI_TIMING_DIAG
+                // Report the derived dwell the hopper will actually use
+                // (system-wide F1 rule: sweep ~ 5 s for every selection).
+                uint16_t wd = ct_derived_dwell(cnt);
+                Serial.printf("[WIFI-TIMING] N=%u dwell=%u sweep=%u\n",
+                              (unsigned)cnt, (unsigned)wd,
+                              (unsigned)(cnt * (uint32_t)wd));
+#endif
+              }
               ch_keypad_open = false;
               drawMenu();
               delay(150);
@@ -326,9 +351,19 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
           if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {
             esp_wifi_set_channel(target_channel, WIFI_SECOND_CHAN_NONE);
           } else if (currentRadioMode != RADIO_BLE) {
-            // Begin on the configured channel set when one exists.
-            if (hop_count > 0) esp_wifi_set_channel(hop_channels[hop_pos], WIFI_SECOND_CHAN_NONE);
-            else esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
+            // Begin the scan at the LOWEST channel of the active set. The
+            // hopper pre-increments before tuning, so arm one step before
+            // the start and park the radio on the lowest channel: the first
+            // fire wraps onto it (custom sets re-fire slot 0; the default
+            // sweep wraps current_ch_idx 12 -> 0 = channel 1).
+            if (hop_count > 0) {
+              hop_pos = hop_count - 1;
+              current_ch_idx = hop_channels[0] - 1;
+              esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
+            } else {
+              current_ch_idx = NUM_CHANNELS - 1;
+              esp_wifi_set_channel(CHANNELS[current_ch_idx], WIFI_SECOND_CHAN_NONE);
+            }
           }
 
           current_x = 0;
