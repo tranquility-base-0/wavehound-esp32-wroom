@@ -6,174 +6,76 @@ the clear text that ordinary network chatter exposes — DNS/mDNS, DHCP, NetBIOS
 TLS metadata, and more — alongside vendor (OUI) resolution and a persistent
 "notable finds" list.
 
+Wavehound is passive and observation-oriented. It listens to traffic that is
+already on the air and logs what it sees; it does not decrypt encrypted
+communications and does not interfere with the networks it observes.
+
 ## Overview
 
 Wavehound runs on an ESP32 with an ILI9488 TFT. Capture, parsing, classification,
 and display all happen on-device. The serial monitor is the complete, authoritative
 log; the on-screen views are deliberately small, curated windows into it.
 
-## Hardware and build
+## Hardware
 
-_pending — board, wiring, PlatformIO, flash procedure, and the 460800 baud serial rate._
+Wavehound currently targets commodity ESP32 development hardware with a 3.5"
+ILI9488 touch display and a microSD card for the OUI database — the class of
+widely available all-in-one ESP32 boards often called "cheap yellow displays".
+
+Building from source uses PlatformIO:
+
+    pio run -e esp32dev          # build
+    pio run -e esp32dev -t upload  # flash
+
+The serial monitor runs at 460800 baud.
+
+_detailed BOM, pinout, and wiring guide — pending_
+
+## Buying a pre-built Wavehound
+
+A small-batch pre-built version is planned. Store link: _placeholder_.
 
 ## Operating modes
 
-_pending — WiFi, BLE, AP scan, channel scan, foxhunt, and PCAP promiscuous capture._
+- **WIFI** — live 2.4 GHz channel-hopping capture with clear-text leak display,
+  device list, and foxhunt (locate a selected device by signal strength).
+- **BLE** — Bluetooth Low Energy device scanning and listing.
+- **NETWORKS** — access-point discovery and per-AP view.
+- **CHANNELS** — per-channel activity metering.
+- **PCAP** — promiscuous packet capture to SD card.
+- **CHASE TAIL** — see below.
+- **SETTINGS** — device configuration.
 
-## The capture pipeline
+## Chase Tail
 
-_pending — capture → filter → 30-second cooldown → queue → parse → dedup → display._
+CHASE TAIL is Wavehound's countersurveillance mode — an implementation of the
+well-known "chasing your tail" concept: detecting devices that persist across
+*changing RF environments*, the classic signature of something deliberately
+co-locating with the carrier. Wavehound segments the RF environment into
+committed "environments" (E0, E1, …), then watches for device identities —
+BSSIDs, SSIDs, probe-request traffic — that keep reappearing across distinct
+environments. Detection is statistical and works over identity sets, not
+geography. It is Wi-Fi-based; BLE device correlation is a planned extension,
+not current behavior.
 
-## Capture counters and display views
+## Documentation
 
-The header at the top of the real-time screen shows three numbers, for example
-`12/239/251`. They form a funnel — the intended relationship is x ≤ y ≤ z — and
-each is the delta over the last ~3-second telemetry window, so the values give
-an immediate indication of current RF activity rather than lifetime totals.
+- `manual` — technical documentation: how the capture pipeline, counters,
+  probe-request tracking, channel timing, and Chase Tail logic work under
+  the hood.
+- `Chase Tail Notes.md` — Chase Tail design history and engineering notes.
 
-Under the hood, `pcap_displayed_total`, `pcap_upstream_total`, and
-`pcap_cooldown_total` are cumulative accounting counters for the current
-telemetry session and preserve the x ≤ y ≤ z invariant; the header renders the
-per-window change in each. Session and mode resets re-baseline the window
-snapshots safely. The semantics of each stage:
+## License
 
-- **x — leaks logged/displayed.** Distinct leak results that made it through
-  processing and were written to the serial log (a unique source-MAC + text
-  pairing). It is *not* the number of rows drawn on the LCD, despite the "made it
-  to screen" phrasing used during development.
-- **y — successfully enqueued.** Events actually placed into a queue, including
-  the deauth and crypto/WEP-TKIP bypass paths.
-- **z — accepted into the pipeline.** Events that passed their applicable
-  acceptance/cooldown gate and proceeded toward queueing, again including the
-  bypass paths. A queue-full event therefore counts toward z but not y; the gap
-  y-to-z measures frames accepted but never enqueued.
+The Wavehound firmware is open-source software, intended to be released under
+the Apache License 2.0 (full license text to be added with the first public
+release).
 
-The point worth settling early: the first number can reach 100+ per cycle while the
-screen can only ever show a handful of rows. That is expected and healthy. Every
-distinct leak flows into three separate places, and only the serial log keeps all of
-them:
+The Wavehound name and logo are the identity of this project and are not
+covered by the software license: permission to use the source code does not
+grant permission to present derivative products as official Wavehound devices.
 
-1. **Serial monitor — keeps everything.** Each distinct leak prints one CLRTXT line.
-   Nothing is lost here; this is the complete record.
-
-2. **Real-time waterfall — keeps the most recent 5.** It is a rolling window: each
-   new distinct leak pushes the oldest one off the bottom. Over a busy cycle it
-   scrolls through 100+ distinct leaks, but at any instant only the latest five are
-   visible.
-
-3. **Persistent (sniff) list — keeps at most 20, by score.** Entries are retained by
-   a score (text length plus a high-value bonus). Of the 100+ distinct leaks in a
-   busy cycle, only about 20 earn or keep a slot; the rest are never inserted or are
-   later evicted by a higher-value newcomer.
-
-So nothing is silently dropped from the pipeline: every distinct leak is
-serial-printed. The two on-screen views are small and curated — a live "tail" of
-five and a "best-of" list of twenty — while serial remains the authoritative mirror.
-
-## The [xN] repeat count
-
-_pending — [xN] is the number of times the exact full-payload frame represented by a
-row was received, including copies suppressed by the 30-second cooldown._
-
-## Probe request tracking
-
-When a device scans for networks, it broadcasts probe request frames announcing
-the network names (SSIDs) it is looking for. These frames reveal a device's
-history — every network it has previously joined — which makes them rich
-identification evidence. Wavehound tracks this in its probe tracker view.
-
-### Randomized MACs
-
-Modern phones and laptops randomize the transmitter MAC address in probe
-requests (the locally-administered bit is set on the address), rotating to a
-new identity periodically so the same phone appears as many different "devices".
-Wavehound detects this (`mac[0] & 0x02`) and applies two rules:
-
-- A physical (non-randomized) MAC always passes, and its vendor is resolved
-  from the OUI database.
-- A randomized MAC passes only if the probe carries a real, printable SSID —
-  a randomized probe for a wildcard (hidden-network) sweep carries no useful
-  identity, so it is not tracked.
-
-For randomized MACs, the vendor shown is *inferred* from Vendor Specific
-information elements (IE tag 221) in the probe itself when present (e.g.
-"Apple~IE"); otherwise it falls to SD-card OUI resolution of the transient
-address, which for randomized MACs usually resolves to the chip maker rather
-than the phone brand.
-
-### IE-based device fingerprinting (hardware hash)
-
-Every tracked probe builds a 32-bit fingerprint from the probe's information
-elements:
-
-- The **tag numbers** of every IE present are hashed in order, capturing the
-  structural skeleton of the frame (which capabilities the chipset advertises).
-- The **complete payload bytes** of three relatively stable IEs are also
-  hashed: tag 45 (HT Capabilities), tag 127 (Extended Capabilities), and
-  tag 221 (Vendor Specific).
-
-This is best understood as an *implementation fingerprint* rather than a true
-hardware identity: it fingerprints the chipset/driver's IE composition. It is
-strict equality — a device that omits or reorders an information element
-between probes can produce different hashes for the same radio, so it is one
-signal, not proof.
-
-### PNL (Preferred Network List) evidence
-
-Each tracked device accumulates two forms of "where has this device been"
-evidence:
-
-- **Exact SSID history** — the real strings, deduplicated, in a per-device
-  list (up to 15 entries, drawn from a shared 150-slot pool).
-- **A 64-bit bitmap** (`pnl_hash`) — each SSID folds to one bit via a djb2
-  hash mod 64. This is cheap and mergeable, but lossy: two different SSIDs
-  collide into the same bit about 1 time in 64, so the bitmap is a hint, not
-  proof. Wildcard probes (`<Wld>` for broadcast sweeps, `<Nul>` for
-  blank/hidden names) are recorded but deliberately excluded from the bitmap.
-
-### Smart endpoint identification (correlation)
-
-Because a rotating MAC makes one phone look like five, the tracker runs a
-background correlation pass (every ~5 s) that tries to merge records that are
-probably the same physical device — this is the "Smart Endpoint
-Identification" logic. Two records are compared with:
-
-1. **Hardware gate** — the IE fingerprints (above) must match exactly.
-   Mismatched fingerprints are never merged.
-2. **Network evidence** — the two devices' PNL bitmaps are compared. An
-   identical non-empty bitmap scores +50; a subset/superset relationship
-   scores +30, but only when both devices have actually probed networks and
-   the exact SSID histories share at least one real network name (empty
-   bitmaps and bitmap-only coincidences score nothing).
-3. **Spatial evidence** — instantaneous RSSI within 5 dB scores +40;
-   more than 15 dB apart subtracts 50.
-
-A merge needs a total of 70+ points. On a merge, the newer MAC and
-timestamps are adopted, hit counters and MAC-rotation counts accumulate, and
-the exact SSID lists are unioned — so a device that has rotated MACs twice
-shows one row with 3 rotations and the combined network history, instead of
-three separate entries.
-
-What correlation cannot do: it cannot merge a rotated MAC whose fingerprint
-changed between probes (the hard gate rejects it), and it cannot rescue two
-devices with identical chipsets that probe identical networks at similar
-signal strength — those are genuinely ambiguous from the air.
-
-## Serial output
-
-_pending — CLRTXT lines and the [DIAG] / [PROF] diagnostic lines._
-
-## Supported protocols
-
-_pending — DHCP, DNS/mDNS, ARP, ICMP, EAPOL, CDP/LLDP, NetBIOS, SSDP/UPnP, HTTP,
-MQTT, SNMP, TLS SNI, and others._
-
-## Known limitations
-
-_pending — stateless packet-by-packet parsing, the 64-flow cache, TCP-boundary and
-ASN.1 length limits, ECH._
-
-## Glossary
-
-_pending — Seen, Suppressed, Shipped, Arrived, Queue Drops, and the other counter
-terms._
+Wavehound builds on third-party open components, including NimBLE-Arduino
+(Apache-2.0), SdFat (MIT), TFT_eSPI (permissive/MIT-derived), and the Ubuntu
+Mono typeface (Ubuntu Font Licence 1.0). Full attribution will be collected
+in a NOTICE file.

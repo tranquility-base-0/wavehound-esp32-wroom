@@ -1,4 +1,10 @@
-The general capture pipeline for real time and persistent list (sniff list)/display
+Wavehound technical manual
+
+This document explains how Wavehound works under the hood. Design history and
+engineering notes for the Chase Tail mode live separately in Chase Tail Notes.md.
+
+
+The general capture pipeline for real time and persistent list (DEVICES) /display
 
                  CORE 0 / CAPTURE
                         │
@@ -105,7 +111,134 @@ live_dump_dropped  = packets that passed dedup but couldn't enter liveDumpQueue
 leak_isr_dropped   = crypto/deauth packets that couldn't enter leakQueue directly
 leak_core1_dropped = parsed packets that couldn't enter leakQueue on Core 1
 
-Already developed / discussed
+
+header counters and the display funnel
+
+The header at the top of the real-time screen shows three numbers, for example
+`12/239/251`. They form a funnel — the intended relationship is x <= y <= z — and
+each is the delta over the last ~3-second telemetry window, so the values give
+an immediate indication of current RF activity rather than lifetime totals.
+
+Under the hood, `pcap_displayed_total`, `pcap_upstream_total`, and
+`pcap_cooldown_total` are cumulative accounting counters for the current
+telemetry session and preserve the x <= y <= z invariant; the header renders the
+per-window change in each. Session and mode resets re-baseline the window
+snapshots safely. The semantics of each stage:
+
+    x — leaks logged/displayed. Distinct leak results that made it through
+    processing and were written to the serial log (a unique source-MAC + text
+    pairing). It is not the number of rows drawn on the LCD, despite the "made
+    it to screen" phrasing used during development.
+
+    y — successfully enqueued. Events actually placed into a queue, including
+    the deauth and crypto/WEP-TKIP bypass paths.
+
+    z — accepted into the pipeline. Events that passed their applicable
+    acceptance/cooldown gate and proceeded toward queueing, again including the
+    bypass paths. A queue-full event therefore counts toward z but not y; the
+    gap y-to-z measures frames accepted but never enqueued.
+
+The first number can reach 100+ per cycle while the screen can only ever show a
+handful of rows. That is expected and healthy. Every distinct leak flows into
+three separate places, and only the serial log keeps all of them:
+
+    1. Serial monitor — keeps everything. Each distinct leak prints one CLRTXT
+    line. Nothing is lost here; this is the complete record.
+
+    2. Real-time waterfall — keeps the most recent 5. It is a rolling window:
+    each new distinct leak pushes the oldest one off the bottom. Over a busy
+    cycle it scrolls through 100+ distinct leaks, but at any instant only the
+    latest five are visible.
+
+    3. Persistent (DEVICES) list — keeps at most 20, by score. Entries are
+    retained by a score (text length plus a high-value bonus). Of the 100+
+    distinct leaks in a busy cycle, only about 20 earn or keep a slot; the rest
+    are never inserted or are later evicted by a higher-value newcomer.
+
+So nothing is silently dropped from the pipeline: every distinct leak is
+serial-printed. The two on-screen views are small and curated — a live "tail"
+of five and a "best-of" list of twenty — while serial remains the authoritative
+mirror.
+
+
+probe request tracking
+
+When a device scans for networks, it broadcasts probe request frames announcing
+the network names (SSIDs) it is looking for. These frames reveal a device's
+history — every network it has previously joined — which makes them rich
+identification evidence. Wavehound tracks this in its probe tracker view.
+
+Randomized MACs. Modern phones and laptops randomize the transmitter MAC address
+in probe requests (the locally-administered bit is set on the address), rotating
+to a new identity periodically so the same phone appears as many different
+"devices". Wavehound detects this (`mac[0] & 0x02`) and applies two rules:
+
+    - A physical (non-randomized) MAC always passes, and its vendor is resolved
+    from the OUI database.
+    - A randomized MAC passes only if the probe carries a real, printable SSID —
+    a randomized probe for a wildcard (hidden-network) sweep carries no useful
+    identity, so it is not tracked.
+
+For randomized MACs, the vendor shown is inferred from Vendor Specific
+information elements (IE tag 221) in the probe itself when present (e.g.
+"Apple~IE"); otherwise it falls to SD-card OUI resolution of the transient
+address, which for randomized MACs usually resolves to the chip maker rather
+than the phone brand.
+
+IE-based device fingerprinting (hardware hash). Every tracked probe builds a
+32-bit fingerprint from the probe's information elements:
+
+    - The tag numbers of every IE present are hashed in order, capturing the
+    structural skeleton of the frame (which capabilities the chipset advertises).
+    - The complete payload bytes of three relatively stable IEs are also hashed:
+    tag 45 (HT Capabilities), tag 127 (Extended Capabilities), and tag 221
+    (Vendor Specific).
+
+This is best understood as an implementation fingerprint rather than a true
+hardware identity: it fingerprints the chipset/driver's IE composition. It is
+strict equality — a device that omits or reorders an information element
+between probes can produce different hashes for the same radio, so it is one
+signal, not proof.
+
+PNL (Preferred Network List) evidence. Each tracked device accumulates two
+forms of "where has this device been" evidence:
+
+    - Exact SSID history — the real strings, deduplicated, in a per-device list
+    (up to 15 entries, drawn from a shared 150-slot pool).
+    - A 64-bit bitmap (`pnl_hash`) — each SSID folds to one bit via a djb2 hash
+    mod 64. This is cheap and mergeable, but lossy: two different SSIDs collide
+    into the same bit about 1 time in 64, so the bitmap is a hint, not proof.
+    Wildcard probes (`<Wld>` for broadcast sweeps, `<Nul>` for blank/hidden
+    names) are recorded but deliberately excluded from the bitmap.
+
+Smart endpoint identification (correlation). Because a rotating MAC makes one
+phone look like five, the tracker runs a background correlation pass (every
+~5 s) that tries to merge records that are probably the same physical device.
+Two records are compared with:
+
+    1. Hardware gate — the IE fingerprints (above) must match exactly.
+    Mismatched fingerprints are never merged.
+    2. Network evidence — the two devices' PNL bitmaps are compared. An
+    identical non-empty bitmap scores +50; a subset/superset relationship
+    scores +30, but only when both devices have actually probed networks and
+    the exact SSID histories share at least one real network name (empty
+    bitmaps and bitmap-only coincidences score nothing).
+    3. Spatial evidence — instantaneous RSSI within 5 dB scores +40; more than
+    15 dB apart subtracts 50.
+
+A merge needs a total of 70+ points. On a merge, the newer MAC and timestamps
+are adopted, hit counters and MAC-rotation counts accumulate, and the exact
+SSID lists are unioned — so a device that has rotated MACs twice shows one row
+with 3 rotations and the combined network history, instead of three separate
+entries.
+
+What correlation cannot do: it cannot merge a rotated MAC whose fingerprint
+changed between probes (the hard gate rejects it), and it cannot rescue two
+devices with identical chipsets that probe identical networks at similar signal
+strength — those are genuinely ambiguous from the air.
+
+
+supported protocols
 
 You now have parsers for things including:
 
@@ -135,7 +268,7 @@ DropBox discovery traffic
 
 And we specifically added/discussed SOCKS/SOCKS5.
 
-Protocols I would still consider adding
+Protocol candidates (considered, not yet implemented)
 
 The most useful remaining candidates, in my view:
 
@@ -156,7 +289,7 @@ TCP SYN (0x02): This is a connection request. If someone on the network is runni
 TCP RST (0x04): This is a connection reset/rejection. If you see a flurry of RST packets, it usually means a device is trying to talk to a closed port, or a firewall/Intrusion Detection System (IDS) is actively terminating an unauthorized connection.
 
 
-Where the Architecture Will Still "Fail"
+Known limitations
 
 Because Wave Hound operates on a stateless, packet-by-packet basis, there are three scenarios on the modern internet where these parsers will intentionally fail to extract text:
 
@@ -188,3 +321,87 @@ Because the MIC is a hash of the frame's contents, any change to the payload com
     M4 (STA -> AP): The client sends a final, tiny packet that is basically just an "Ack" confirming it installed the keys. It has no nonces or key data, just a new replay counter. Different payload = MIC 3 (5801...).
 
 If the MIC were identical across packets, a hacker could simply copy the MIC from M2 and forge their own M3 or M4 packets to hijack the handshake!
+
+
+channel timing: window, sweep, and dwell
+
+Every hopping mode (WIFI, NETWORKS, CHANNELS, PCAP, CT) shares one timing rule, derived from the selected channel count N (the SELECT CH set, or all 13 channels when no set is configured):
+
+    k      = max(1, floor(5000 ms / (N x 300 ms)))   sweeps per window
+    dwell  = round(5000 ms / (k x N))                per-channel airtime
+    window = k x N x dwell                           ~= 5000 ms for every N
+
+The dwell never drops below the 300 ms floor (enough airtime to catch beacon frames, which fire every ~102 ms). Worked examples: 13 channels give k=1, dwell=385 ms, window=5005 ms; 3 channels give k=5, dwell=333 ms, window=4995 ms; 2 channels give k=8, dwell=313 ms, window=5008 ms.
+
+Three clocks are involved, and they are deliberately distinct:
+
+    Dwell clock — how long the radio sits on one channel before hopping. Varies with N; the first fire of a scan always lands on the lowest channel of the set (mode switches and scan starts re-arm the sweep there).
+
+    Sweep clock — one complete pass over the selected channels (N x dwell: 999 ms at 3 channels, ~5 s at 13). The sweep has no statistical meaning; it is just the radio's rotation period.
+
+    Window clock — the ~5 s observation window. In CT mode this is the statistical window that segmentation consumes (one window = k complete sweeps; a window closing off-screen or mid-stall is discarded). The waterfall bars in every hopping mode also advance on ~5 s boundaries: CT advances one column per window close; the other modes advance one column at the first sweep boundary after ~5 s, so bars always land on the same channel (the set's lowest) and the visible time scale never depends on N.
+
+N therefore changes only the sampling pattern (how airtime is divided and how often each channel is revisited — every channel receives exactly k visits per window), never the visible time scale or the meaning of the statistics. Blocked-loop moments (e.g. an SD vendor lookup) may stretch a window's real-time span slightly; windows always close on complete sweeps.
+
+
+Chase Tail (CT) workflow
+
+CHASE TAIL is the countersurveillance mode: it detects devices that persist
+across changing RF environments. This section describes the current
+implementation; the design history and engineering rationale are in Chase Tail
+Notes.md. The mode is Wi-Fi-based; BLE device correlation is a planned
+extension and is not part of the current behavior.
+
+Observation windows. CT operates on ~5 s statistical windows (see "channel
+timing" above for how the window is derived from the selected channel count —
+the window is NOT a radio sweep; one window spans k complete sweeps). Each
+window accumulates the identities observed on-air: BSSIDs (access points) and
+SSIDs (network names, including names announced in probe requests). A window
+that closed while the processing loop was paused (e.g. during display or SD
+work) is invalid and contributes nothing to the statistics; zero-observation
+windows are real observations and do count.
+
+Environment tracking. Committed environments are kept in a ring (E0, E1, ...).
+A commit copies the open window's accumulated identity sets into the ring,
+clears the accumulator, and re-seeds all statistics, so each new segment starts
+from a clean, seeded state. The RF ENVS screen lists the committed environments
+with their first/last seen wall-clock times and window counts.
+
+Evidence channels and segmentation. Environment changes are detected by three
+independent evidence channels, each answering a different question:
+
+    POPULATION — is the observed number of identities normal, compared to a
+    baseline?
+
+    CHURN — is the per-window flux (how much the identity counts change) larger
+    than baseline?
+
+    TURNOVER — are identities themselves being swapped in and out (new arrivals
+    plus vanished identities, plus inserts that had to be rejected because the
+    accumulator tables were full — the only sensor of the wider environment
+    when the tables are saturated)?
+
+Each channel maintains a horizon-bounded EWMA baseline (population mean and
+noise on one shared clock, churn/turnover flux means), seeded from the first
+observations of each segment. Per-window divergence is converted to evidence,
+smoothed, and a channel "triggers" after sustained evidence. A commit requires
+a 2-of-3 quorum of triggering channels. Baselines re-seed at commit, so
+re-entering an already-learned environment produces little or no evidence.
+
+Persistent-device tracking. The payload of a commit is persistence: a device
+identity (MAC) that is observed in a second distinct committed environment is
+promoted to CT's persistent-device table — the classic "same device keeps
+showing up in different places" signature. The table is capacity-limited and
+evicts by last-seen time. Probe-request traffic and SSID identity information
+associated with a persistent MAC enrich its record.
+
+Display and channel selection. CT's waterfall advances one column per window
+close (~5 s), so the visible time scale is independent of the selected channel
+count. The traffic band under the waterfall shows the per-window byte delta —
+every received frame of at least 24 bytes (signalled length including FCS) that
+arrived during the window, zero-rolled and conserved across window boundaries —
+so its magnitude is comparable to the per-interval traffic charts in the other
+hopping modes. Changing the channel set in CT (SELECT CH) is deferred to a safe window
+boundary — the new set is applied at the next window close rather than mid-window,
+so windows remain composed of complete sweeps. A window closing off-screen or
+during a long processing stall is discarded by the validity rule.
