@@ -346,6 +346,14 @@ bool handleTouchInputs(uint16_t t_x, uint16_t t_y, bool fresh_press) {
           pcap_cooldown_total  = 0;
 
           // Restore the software capture gate.
+          // CT: flush any pending channel-set reselect FIRST, while the
+          // capture fence (menu pause) is still held — the same environment-
+          // boundary semantics as the close-tail apply. This guarantees the
+          // re-arm below (and the entire first resumed window) uses the NEW
+          // hop_channels[]; without this, a quick menu visit resumed onto
+          // the old set for one window before the deferred apply landed.
+          if (currentRadioMode == RADIO_CT) ct_flush_reselect();
+
           pause_sniffing = false;
 
           if ((currentRadioMode == RADIO_WIFI || currentRadioMode == RADIO_AP || currentRadioMode == RADIO_PCAP) && target_locked) {

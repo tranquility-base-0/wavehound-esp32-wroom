@@ -47,6 +47,10 @@ static bool ble_initialized = false;
 
 class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice* advertisedDevice) {
+    // CT BLE burst counter: total advertisement callbacks during a CT burst.
+    // Counted BEFORE the pause_sniffing guard — the burst runs with the CT
+    // capture fence held, so that guard would otherwise discard every hit.
+    if (ct_ble_burst_active) ct_ble_burst_hits++;
     if (pause_sniffing) return;
 
     const uint8_t* rawMac = advertisedDevice->getAddress().getNative();
@@ -233,6 +237,15 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
   }
 };
 
+// Process-lifetime scan-callback instance. NimBLE 1.4.3's setAdvertisedDevice-
+// Callbacks only stores the raw pointer and never deletes it, so per-init
+// `new` instances leaked ~16-24 B of heap per CT cold init (per burst since
+// the productionized lifecycle). A single file-static object replaces them:
+// one .bss allocation instead of one leaked heap block per window, and no
+// delete/ownership bookkeeping is required (registered sites pass its
+// address; it outlives every scan session).
+static BLEPassiveCallbacks ble_passive_cb;
+
 
 // ---------------------------------------------------------------------------
 // SELECT CH keypad parser (Step-1 menu refinement)
@@ -310,6 +323,71 @@ void radio_apply_channel_set(const uint8_t *chans, uint8_t cnt) {
   esp_wifi_set_channel(hop_channels[0], WIFI_SECOND_CHAN_NONE);
 }
 
+// One-shot NimBLE cold boot, byte-identical to the RADIO_BLE entry config:
+// passive scan, duplicates wanted (every advertisement fires onResult —
+// that is what makes the CT counter a total-adv-hits metric), ~100 ms
+// interval with a ~99 ms window. In production CT this runs EVERY burst:
+// the previous burst's ble_shutdown() left ble_initialized false, so each
+// burst cold-boots the stack (hardware-validated ~190 ms) before scanning.
+static void ble_ensure_init() {
+  if (ble_initialized) return;
+  BLEDevice::init("");
+  pBLEScan = BLEDevice::getScan();
+  pBLEScan->setAdvertisedDeviceCallbacks(&ble_passive_cb, true);
+  pBLEScan->setActiveScan(false);
+  // Callbacks-only result mode (verified in NimBLE-Arduino 1.4.3): with the
+  // default m_maxResults = 0xFF the size limit is disabled and every
+  // distinct advertiser is new'd into m_scanResults.m_advertisedDevicesVector
+  // and retained until clearResults() — the confirmed root cause of the
+  // ordinary BLE-mode heap decline. With 0, each device object is deleted
+  // immediately after onResult() returns (NimBLEScan.cpp:156-158 -> erase(),
+  // :466-476); Wavehound consumes only the callback values and never stores
+  // the NimBLEAdvertisedDevice*, so nothing dangles. CT's bounded burst is
+  // unaffected: it already clearResults()es around ble_radio_burst().
+  pBLEScan->setMaxResults(0);
+  pBLEScan->setInterval(100);
+  pBLEScan->setWindow(99);
+  ble_initialized = true;
+}
+
+uint32_t ble_radio_burst(uint32_t seconds) {
+  ble_ensure_init();
+  if (pBLEScan == nullptr) return 0;
+  // Blocking bounded scan: NimBLE-Arduino 1.4.1's no-callback start()
+  // overload waits on a task notification until the scan completes, and its
+  // duration unit is SECONDS (multiplied by 1000 internally). Results are
+  // dropped before and after — CT consumes only the callback counter, never
+  // the result vector, so no per-burst heap growth is retained.
+  pBLEScan->clearResults();
+  pBLEScan->start(seconds);
+  pBLEScan->clearResults();
+  return ct_ble_burst_hits;
+}
+
+// Production CT helper (ct.cpp ct_ble_burst): brings the stack up to the
+// exact first-use state (controller enabled, host task running, scanner
+// configured) without scanning; the scan is issued separately by
+// ble_radio_burst(). Guarded by ble_initialized.
+void ble_init_only() {
+  ble_ensure_init();
+  if (pBLEScan != nullptr) pBLEScan->clearResults();
+}
+
+// Production CT helper (ct.cpp ct_ble_burst): the SUPPORTED composite BLE
+// shutdown — NimBLEDevice::deinit(false) runs nimble_port_stop (ends the
+// host task), nimble_port_deinit, then the HCI/controller disable+deinit
+// chain — with Wavehound's ble_initialized flag kept in lockstep so the
+// next ble_init_only()/ble_radio_burst() actually re-initializes.
+// deinit(false) preserves m_pScan, so the pBLEScan pointer stays valid
+// across the cycle. This teardown is the hardware-validated fix for the
+// `wifi:timeout when WiFi un-init, type=4` message and the recurring
+// per-burst heap retention: the BT controller must not remain enabled
+// across the CT Wi-Fi OFF -> STA transition.
+void ble_shutdown() {
+  NimBLEDevice::deinit(false);
+  ble_initialized = false;
+}
+
 void switchRadioMode(RadioMode targetMode) {
   if (currentRadioMode == targetMode) return;
 
@@ -369,8 +447,12 @@ void switchRadioMode(RadioMode targetMode) {
     if (!ble_initialized) {
       BLEDevice::init("");
       pBLEScan = BLEDevice::getScan();
-      pBLEScan->setAdvertisedDeviceCallbacks(new BLEPassiveCallbacks(), true);
+      pBLEScan->setAdvertisedDeviceCallbacks(&ble_passive_cb, true);
       pBLEScan->setActiveScan(false);
+      // Callbacks-only result mode — see ble_ensure_init() for the full
+      // rationale; applied here too because this path has its own scanner
+      // configuration and must not rely on it persisting.
+      pBLEScan->setMaxResults(0);
       pBLEScan->setInterval(100);
       pBLEScan->setWindow(99);
       ble_initialized = true;

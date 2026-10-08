@@ -1,5 +1,6 @@
 #include "ct.h"
 #include "core/radio.h"
+#include "capture/capture.h" // sniffer_callback: CT BLE burst Wi-Fi restore reattach
 #include "modes/ap_scanner.h"
 #include "osint/osint.h"
 
@@ -15,9 +16,28 @@
 #define CT_DIAG_TRIG     1   // [CT-TRIG] channel crossings (POP/CHURN/TURN)
 #define CT_DIAG_PERSIST  1   // [CT-PERSIST] promotions/evictions
 #define CT_DIAG_STEPS    0   // [CT-STEP3/4.1/4.2/5] window telemetry
-#define CT_DIAG_TIMING   1   // [CT-TIMING] TEMPORARY: prints the F1 derivation
+#define CT_DIAG_TIMING   0   // [CT-TIMING] TEMPORARY: prints the F1 derivation
                             // at every ct_timing_apply() run. Measurement-only.
                             // Remove after diagnosis.
+
+// CT alternating BLE burst (display-only side channel). When 1, every CT
+// window close on the chart screen is followed by a bounded passive NimBLE
+// scan; the observed advertisement count renders as a second waterfall lane.
+// CT_BLE_BURST_SEC is in SECONDS — NimBLE-Arduino 1.4.1 multiplies the scan
+// duration by 1000 internally (ms would scan ~33 minutes).
+//
+// Lifecycle (hardware-validated by the A/B/C/D + mode-4 diagnostic campaign,
+// 2026-10): BLE is fully initialized before each scan and fully shut down
+// (NimBLEDevice::deinit(false)) after it, so the BT controller/coexistence
+// subsystem is NEVER enabled during the Wi-Fi OFF -> STA transition.
+// Hardware results of that lifecycle: no `wifi:timeout when WiFi un-init,
+// type=4`, no recurring per-burst heap retention (the old controller-
+// enabled lifecycle lost ~50 B/burst), reliable cold reinit every cycle
+// (init ~190 ms), and normal hit counts. A/B evidence: with the controller
+// enabled across Wi-Fi OFF/STA the retention + timeout appear even with no
+// scan; with it deinit'd (D-arm, mode 4) neither appears.
+#define CT_BLE_BURST     1
+#define CT_BLE_BURST_SEC 2
 
 // ---- Step 3 observation accumulator (Core-0 feeder) ----
 //
@@ -38,6 +58,15 @@
 // cost: 8 + 4 = 12 B file-local static. acc itself is never cleared.
 static uint64_t ct_touch_bssid_mask = 0; // bit i = acc.bssid[i] seen this window
 static uint32_t ct_touch_ssid_mask = 0;  // bit i = acc.ssid[i] seen this window
+
+// Cumulative per-SEGMENT confirmation masks: OR of every valid window's
+// touch masks since the last commit (Core-1-maintained at the close, from
+// the window snapshots — no new cross-core state). Identities carried in
+// acc across a commit but never RE-observed in the new segment have no bit
+// here and are excluded from persistence evidence. Cleared at commit (after
+// the persistence pass consumed them) and on CT session reset.
+static uint64_t ct_seg_bmask = 0;        // bit i = acc.bssid[i] observed this segment
+static uint32_t ct_seg_smask = 0;        // bit i = acc.ssid[i] observed this segment
 
 // Step 4.1 temporal-derivative scratch (file-local, Core-1-owned, reset on CT
 // exit/re-entry like the touch masks — no CTState growth, no new primitives).
@@ -157,6 +186,11 @@ static const uint16_t CT_K3 = 3;                  // churn normalization K3
 static const uint16_t CT_K5 = 3;                  // turnover normalization K5 (trace-tunable)
 static const uint16_t CT_TURN_N_MAX_Q8 = 8192;    // turnover evidence clamp (32.0 Q8.8)
 static const uint8_t CT_N_MIN = 3;                // persistence length (windows)
+// RC2 defensive gate: a second environment shorter than this many valid
+// windows does not qualify as persistence evidence (the MAC stays pending,
+// merge/refresh path). Quorum-committed envs are always >= 5 windows, so
+// this only bites degenerate boundaries (e.g. SELECT CH 1-window envs).
+static const uint8_t CT_PROMOTE_MIN_WIN = 2;
 
 // Integer square roots (no floating-point state). The 64-bit variant serves
 // the byte-variance EWMA (KiB^2 Q8.16); raw-byte residuals would overflow
@@ -323,11 +357,25 @@ static uint8_t ct_reselect_chans[NUM_CHANNELS];
 static uint8_t ct_reselect_count = 0;
 static bool ct_reselect_pending = false;
 
-// Window-boundary render request for the CT waterfall: set at EVERY window
-// close (valid or invalid, so the visible timeline stays uniformly time-
-// based), consumed by the main loop via ct_take_render_request(). One
-// pending request yields at most one render; the boolean cannot queue.
-static bool ct_render_pending = false;
+// Typed CT waterfall render slots: set at every window close (CT_RTYPE_WIFI,
+// valid or invalid, so the visible timeline stays uniformly time-based) and
+// after each BLE burst (CT_RTYPE_BLE). Consumed by the main loop via
+// ct_take_render_slot(); bounded at CT_RENDERQ_MAX with silent drop on a
+// third push (same bounded/fail-safe philosophy as the rest of CT state).
+// The old boolean could not queue two phases: the Core-1 loop is blocked
+// inside the BLE burst, so the second set was idempotent and the BLE phase
+// had no chart slot of its own.
+static uint8_t ct_renderq[CT_RENDERQ_MAX];
+static uint8_t ct_renderq_n = 0;
+static uint8_t ct_last_slot = CT_RTYPE_NONE;
+
+// CT BLE burst accounting: incremented per advertisement callback while the
+// burst is live (radio.cpp, NimBLE host context). ct_ble_last_hits holds the
+// completed burst's total for the chart's BLE-lane column.
+volatile bool     ct_ble_burst_active = false;
+volatile uint32_t ct_ble_burst_hits = 0;
+static uint32_t   ct_ble_last_hits = 0;
+static uint32_t   ct_render_wbytes = 0;  // completed-window bytes (chart reads)
 
 // Pure F1 integer derivation (single source of truth for CT and the non-CT
 // Wi-Fi-family hopper): k = max(1, floor(T/(N*floor_dwell)));
@@ -396,13 +444,101 @@ uint16_t ct_hop_interval() {
   return (uint16_t)HOP_INTERVAL;
 }
 
-bool ct_take_render_request() {
-  // Return-and-clear of the window-boundary render request. CT runs on the
-  // single Core-1 loop context, so read-then-clear is atomic here.
-  bool pending = ct_render_pending;
-  ct_render_pending = false;
-  return pending;
+static void ct_renderq_push(uint8_t type) {
+  if (ct_renderq_n < CT_RENDERQ_MAX) ct_renderq[ct_renderq_n++] = type;
 }
+
+uint8_t ct_take_render_slot() {
+  // Return-and-clear of the oldest queued render slot. CT runs on the single
+  // Core-1 loop context (producers inside processCtData(), consumer in
+  // loop()), so FIFO access is atomic by construction.
+  if (ct_renderq_n == 0) return CT_RTYPE_NONE;
+  uint8_t t = ct_renderq[0];
+  ct_renderq[0] = ct_renderq[1];
+  ct_renderq_n--;
+  ct_last_slot = t;
+  return t;
+}
+
+uint8_t ct_last_render_slot() { return ct_last_slot; }
+
+uint32_t ct_last_burst_hits() { return ct_ble_last_hits; }
+
+uint32_t ct_window_render_bytes() { return ct_render_wbytes; }
+
+#if CT_BLE_BURST
+// ---- CT BLE burst (display-only side channel) ----
+// Runs strictly AFTER a Wi-Fi window has closed and all of its accounting /
+// validity / segmentation work is done, while the capture fence is still
+// held (pause_sniffing == true inside the close): nothing can reach the CT
+// accumulators for the whole BLE -> Wi-Fi-off -> Wi-Fi-on transition. The
+// radio timeline is time-division, not coexistence: promiscuous capture is
+// stopped first, one blocking bounded passive scan runs on the existing
+// NimBLE configuration (BLE freshly cold-initialized each cycle and fully
+// deinit'd after it — see the lifecycle note at the CT_BLE_BURST gate),
+// then Wi-Fi STA/promiscuous is restored. This deliberately bypasses
+// switchRadioMode() (which would union-wipe CT state); CT keeps mode
+// ownership the entire time.
+//
+// Timing safety: the burst blocks the single Core-1 loop, so
+// processCtData() is never re-entered mid-burst, the hopper cannot fire,
+// and no failsafe is armed. The close tail re-anchors ct_window_start_ms /
+// ct_last_hop_ms with post-burst millis() AFTER this returns, so the
+// existing failsafe (measured from the last hop transition) never sees the
+// burst. No timing machinery is touched.
+static bool ct_ble_burst(uint32_t *hits_out) {
+  *hits_out = 0;
+  // Display-only: skip off-screen. Off the chart screen the data has no
+  // consumer and every cycle would only churn the radio and block menus.
+  if (currentState != SCREEN_CHART) return false;
+
+  uint32_t hits = 0; // total advertisement callbacks during this burst
+
+  // Teardown/scan order (hardware-validated): stop promiscuous capture
+  // FIRST (frees the antenna lock and gives the BLE scan exclusive radio
+  // access, matching the ordinary RADIO_BLE entry ordering,
+  // radio.cpp:421-422), then run the whole BLE lifecycle BEFORE
+  // WiFi.mode(WIFI_OFF) so the BT controller is deinit'd — never merely
+  // idle-enabled — for the entire Wi-Fi OFF -> STA transition below.
+  esp_wifi_set_promiscuous(false);
+  ct_ble_burst_hits = 0;
+  ct_ble_burst_active = true;
+  ble_init_only(); // fresh BLEDevice::init each cycle (ble_initialized is
+                   // false after the previous burst's ble_shutdown())
+  hits = ble_radio_burst(CT_BLE_BURST_SEC); // blocking; SECONDS
+  ble_shutdown(); // supported composite NimBLEDevice::deinit(false) + lockstep
+  WiFi.mode(WIFI_OFF);
+  ct_ble_burst_active = false;
+
+  // Wi-Fi restore, in switchRadioMode()'s STA/promiscuous order, plus two
+  // things switchRadioMode() gets away with skipping only because it relies
+  // on an immediate hop: an explicit re-tune to the CURRENT hop slot (the
+  // next CT dwell must be on the parked channel, and WiFi.mode() resets the
+  // radio) and a sniffer_callback reattach (WiFi.mode() can clobber it).
+  // Hopper state (hop_channels / hop_pos / hop_count) is untouched: parking
+  // on the channel the hopper currently represents preserves sweep phase
+  // exactly. That channel is hop_channels[hop_pos] ONLY for a custom SELECT
+  // CH set (hop_count > 0); in the default full CHANNELS[] sweep
+  // hop_channels[] is the 0 = unused-slot sentinel (radio.cpp:38) and the
+  // parked channel is CHANNELS[current_ch_idx] (the hopper's own
+  // selection, radio.cpp:495-498). Passing the 0 sentinel to
+  // esp_wifi_set_channel() fails with ESP_ERR_INVALID_ARG and leaves the
+  // driver on the WIFI_STA default (channel 1) for the residual dwell.
+  uint8_t park_ch = (hop_count > 0)
+                        ? hop_channels[hop_pos]
+                        : CHANNELS[current_ch_idx];
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  // Guard park_ch: 0 is never a legal channel, so skip the call rather than
+  // force another INVALID_ARG.
+  if (park_ch) (void)esp_wifi_set_channel(park_ch, WIFI_SECOND_CHAN_NONE);
+  (void)esp_wifi_set_promiscuous(true);
+  (void)esp_wifi_set_promiscuous_rx_cb(&sniffer_callback);
+
+  *hits_out = hits;
+  return true;
+}
+#endif // CT_BLE_BURST
 
 // Commit the open segment: copy the accumulator into the next history slot
 // with its final provisional E/T class, advance the global segment index,
@@ -564,7 +700,10 @@ static void ct_persist_observe(const uint8_t *mac, bool is_ap, int probe_slot,
   int pi = ct_pend_find(mac);
   if (pi >= 0) {
     CtPendMac &p = ctState.pend.e[pi];
-    if (p.first_env_id == env) {                   // same env, merged type
+    if (p.first_env_id == env || win < CT_PROMOTE_MIN_WIN) {
+      // Same-env merge, OR second environment shorter than the promotion
+      // gate (RC2): a 0/1-window environment is not persistence evidence.
+      // Either way the MAC stays pending for a later, longer environment.
       p.flags |= fl;
       if (src_first < p.first_seen) p.first_seen = src_first;
       return;
@@ -634,12 +773,18 @@ static void ct_persist_observe(const uint8_t *mac, bool is_ap, int probe_slot,
 // pause fence: Core-0 writers (probe tracker, acc feeder) are quiesced, so
 // probeList reads are stable for the duration.
 static void ct_persist_commit(uint16_t env, uint16_t win) {
-  // AP evidence: the committed environment's exact BSSID set. Per-BSSID
-  // stamps do not exist in acc, so the environment-level stamps are the
-  // closest available observation times (documented semantics).
-  for (uint8_t i = 0; i < ctState.acc.n_bssid; i++)
+  // AP evidence: the committed environment's exact BSSID set, filtered to
+  // slots CONFIRMED by observation in this segment (cumulative mask). With
+  // identity carry across commits, acc may hold slots from the previous
+  // environment that were never re-observed — those are NOT evidence for
+  // this environment. Per-BSSID stamps do not exist in acc, so the
+  // environment-level stamps are the closest available observation times
+  // (documented semantics).
+  for (uint8_t i = 0; i < ctState.acc.n_bssid; i++) {
+    if (((ct_seg_bmask >> i) & 1ULL) == 0) continue; // carried, never re-observed
     ct_persist_observe(ctState.acc.bssid[i], true, -1,
                        ctState.acc.first_seen, ctState.acc.last_seen, env, win);
+  }
   // Probe evidence: snapshot + clear the hit mask, then resolve each bit's
   // identity from the tracker under the fence.
   uint64_t hits = ct_probe_hit_mask;
@@ -673,10 +818,92 @@ static void ct_commit_segment() {
               (ct_prov_is_t ? CT_FLAG_CLASS_T : 0);
   dst.reserved = 0;
   ctState.current_idx = next;
-  // ---- Persistence pass (fence still held) ----
+  // ---- Persistence pass (fence still held; consumes the cumulative masks) ----
   ct_persist_commit(dst.env_id, dst.window_count);
   ctState.env_seq++;
+  // ---- Identity carry (RC1) + selective segment-scratch reset ----
+  // The identity arrays (bssid[]/ssid[]/n_bssid/n_ssid) are deliberately
+  // PRESERVED across the commit: they are the previous environment's
+  // successfully stored identities, and carrying them (a) eliminates the
+  // post-commit refill transient that masqueraded as turnover in stationary
+  // dense environments, and (b) re-scopes rejected-insert counting to
+  // identities genuinely absent from the previous environment. Only the
+  // segment-local scratch fields are reset, explicitly field-by-field.
+  // acc.env_id is never read (commit stamps dst from env_seq); acc.reserved
+  // is unused. Persistence evidence has already been filtered to slots
+  // confirmed by the cumulative masks, which are consumed above and cleared
+  // here.
+  ct_seg_bmask = 0;
+  ct_seg_smask = 0;
+  ctState.acc.first_seen = 0;   // empty-accumulator sentinel (chart + feeder)
+  ctState.acc.last_seen = 0;
+  ctState.acc.window_count = 0;
+  ctState.acc.flags = 0;        // truncation bits are per-segment confidence
+  ctState.acc.reserved = 0;
+  ct_reset_segment_stats();
+}
+
+// Defined below, before processCtData(): measurement-domain reset used by
+// ct_flush_reselect() (forward-declared here because it sits after the
+// flush helper's definition point).
+static void ct_segment_fresh_reset();
+
+// Apply a pending boundary-deferred SELECT CH set (measurement-domain
+// boundary). The single authoritative reselect-application sequence, shared
+// by the window-close tail and the CT resume path:
+//   radio_apply_channel_set(new set)  -> hop list/pos/hardware channel
+//   ct_timing_apply()                 -> re-derive k / dwell / window
+//   ct_segment_fresh_reset()          -> a set change is a MEASUREMENT-DOMAIN
+//                                        change, not an RF-environment
+//                                        transition: the open segment is
+//                                        silently discarded (no env record,
+//                                        no env_seq increment, no persistence
+//                                        pass, no RC1 carry) and a fresh
+//                                        segmentation baseline is established
+//                                        — exactly as fresh CT entry would
+//                                        leave it
+//   re-anchor the channel watcher     -> seed the new set's coverage bit
+//                                        without counting a spurious hop
+// Safe to call while the capture fence is held (pause_sniffing true): both
+// call sites guarantee that — the close tail by construction, the resume
+// path before scanAction() reopens the gate. No-op when nothing is pending.
+// Returns true when a pending set was applied.
+bool ct_flush_reselect() {
+  if (!ct_reselect_pending) return false;
+  radio_apply_channel_set(ct_reselect_chans, ct_reselect_count);
+  ct_timing_apply(); // re-derive k / dwell / window for the new set
+  ct_segment_fresh_reset();
+  // Re-anchor the watcher: the radio now sits on the new set's first
+  // channel; seed its coverage bit without counting a spurious hop.
+  ct_last_ch = current_ch_idx;
+  ct_chans_mask |= (uint16_t)1 << current_ch_idx;
+  ct_reselect_pending = false;
+  return true;
+}
+
+// A channel-set change is a new RF MEASUREMENT DOMAIN, not an RF-environment
+// transition. The RF-segmentation subset of a fresh CT entry: discard the
+// open segment entirely — including the RC1 carried identity set (it belongs
+// to the old sampling domain and must not occupy the new domain's bounded
+// identity slots) — and re-establish a clean baseline, WITHOUT manufacturing
+// an environment record, touching env_seq, or generating persistence
+// evidence (normal RC1 carry/evidence filtering applies only to ordinary
+// segment commits). Deliberately NOT part of this reset (continuity across
+// a domain change): persistence table, pending pool, env_seq, committed
+// environment history, probe tracker/ssidPool, BLE/render state, channel/
+// hopper/timing state. The full CT entry/session reset in processCtData()'s
+// non-CT branch additionally clears lifecycle state and is preserved as-is.
+static void ct_segment_fresh_reset() {
   memset(&ctState.acc, 0, sizeof(CtEnvironment));
+
+  ct_seg_bmask = 0;
+  ct_seg_smask = 0;
+  ct_touch_bssid_mask = 0;
+  ct_touch_ssid_mask = 0;
+  ct_obs_count = 0;
+  ct_rej_count = 0;
+  ct_window_bytes = 0;
+
   ct_reset_segment_stats();
 }
 
@@ -690,6 +917,8 @@ void processCtData() {
     // first window after re-entry.
     ct_touch_bssid_mask = 0;
     ct_touch_ssid_mask = 0;
+    ct_seg_bmask = 0;         // no confirmed identities survive a session
+    ct_seg_smask = 0;
     ct_obs_count = 0;
     ct_rej_count = 0;
     ct_chans_mask = 0;
@@ -699,7 +928,9 @@ void processCtData() {
     ct_reset_segment_stats();
     ct_window_running = false;
     ct_hop_transitions = 0;   // no stale hop count may pre-load the next session
-    ct_render_pending = false; // a queued render request dies with the session
+    ct_renderq_n = 0;         // queued render slots die with the session
+    ct_ble_last_hits = 0;     // a stale burst total must not bleed into the next
+    ct_render_wbytes = 0;     // same for the completed-window byte snapshot
     ct_reselect_pending = false; // a queued set change dies with the session
     return;
   }
@@ -783,10 +1014,23 @@ void processCtData() {
   // channels). Valid-window accounting is unaffected.
   uint32_t wbytes = ct_window_bytes;
   ct_window_bytes = 0;
+  // Completed-window byte total for the CT Wi-Fi waterfall lane. The lane
+  // renders ONE column per statistical window (slot-paced), consumed in the
+  // same loop iteration as this roll — so a per-tick delta of the now-zeroed
+  // accumulator cannot see the window mass. The chart reads this snapshot on
+  // the CT_RTYPE_WIFI slot instead. Zero for invalid windows: unobservable
+  // time contributes no bar (blank column, the existing zero convention).
+  ct_render_wbytes = valid ? wbytes : 0;
 
   if (valid) {
     ctState.acc.window_count++;
     uint16_t win = ctState.acc.window_count; // snapshot (commit resets acc)
+
+    // Cumulative segment confirmation: this window's observed identities
+    // (valid windows only — invalid windows are unobservable time). These
+    // bits, not bare acc membership, are what persistence evidence requires.
+    ct_seg_bmask |= bmask;
+    ct_seg_smask |= smask;
 
     uint8_t nb = ctState.acc.n_bssid;
     uint8_t ns = ctState.acc.n_ssid;
@@ -938,8 +1182,14 @@ void processCtData() {
 
     // ---- Channel 3 (LIVE): SSID IDENTITY TURNOVER ----
     // Adjacent-window identity dynamics over the touch masks (the bit->SSID
-    // mapping is stable for acc's lifetime) plus the untracked-stream
-    // arrivals (rejected inserts). Consumes ct_prev_smask BEFORE it is
+    // mapping is stable for acc's lifetime — identities are carried across
+    // commits, so a slot index keeps referring to the same identity) plus
+    // rejected inserts. With identity carry, a rejected insert means an
+    // identity genuinely absent from the carried previous-environment set
+    // (novelty), not a bounded-set artifact: in a stationary environment the
+    // overflow tail's retries are steady-state and self-quiet in the m
+    // baseline, while a real dense->dense-different transition keeps
+    // producing novel rejects. Consumes ct_prev_smask BEFORE it is
     // overwritten below. Needs only a previous valid window — there is no
     // ABSTAIN case, so a zero-RF -> populated transition is visible here
     // (the regime the retention channel was mathematically unable to fire
@@ -1131,25 +1381,29 @@ void processCtData() {
   // window's fold, or nothing was observed), there is nothing to commit —
   // clear the open statistics instead. The persist table, pending pool, and
   // environment history are deliberately untouched: this is an environment
-  // boundary, not a session reset.
-  if (ct_reselect_pending) {
-    radio_apply_channel_set(ct_reselect_chans, ct_reselect_count);
-    ct_timing_apply(); // re-derive k / dwell / window for the new set
-    if (ctState.acc.window_count > 0)
-      ct_commit_segment();
-    else
-      ct_reset_segment_stats();
-    // Re-anchor the watcher: the radio now sits on the new set's first
-    // channel; seed its coverage bit without counting a spurious hop.
-    ct_last_ch = current_ch_idx;
-    ct_chans_mask |= (uint16_t)1 << current_ch_idx;
-    ct_reselect_pending = false;
-  }
+  // boundary, not a session reset. (Applied via the shared helper, which is
+  // also invoked by the CT resume path for selections made while paused.)
+  ct_flush_reselect();
   ct_hop_transitions = 0;
-  // Window complete (valid or invalid): request exactly one waterfall
-  // column. The existing CT delta logic turns the first render after the
-  // zero-roll into the full-window bar; no metric special-casing needed.
-  ct_render_pending = true;
+  // Window complete (valid or invalid): enqueue exactly one Wi-Fi waterfall
+  // column. The chart plots the completed window's byte snapshot
+  // (ct_render_wbytes) on this slot; no metric special-casing needed.
+  ct_renderq_push(CT_RTYPE_WIFI);
+#if CT_BLE_BURST
+  // BLE burst — strictly after ALL Wi-Fi window work (validity, commit,
+  // evidence, reselect) and still under the capture fence. On success it
+  // contributes exactly one BLE render slot; skipped bursts contribute
+  // nothing (no fabricated BLE data slot). The fence restore and the
+  // post-close timing re-anchor below run AFTER the burst, so the next
+  // window starts fresh from post-burst time.
+  {
+    uint32_t burst_hits = 0;
+    if (ct_ble_burst(&burst_hits)) {
+      ct_ble_last_hits = burst_hits;
+      ct_renderq_push(CT_RTYPE_BLE);
+    }
+  }
+#endif
   pause_sniffing = was_paused; // RESTORE: do not clear a menu-held pause
   ct_window_start_ms = millis();
   ct_last_hop_ms = millis();

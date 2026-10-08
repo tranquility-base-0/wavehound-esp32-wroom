@@ -56,6 +56,17 @@ bool parseChannelList(const char *s, uint8_t *out, uint8_t *out_count);
 // Used by CT's boundary-deferred SELECT CH apply; see modes/ct.cpp.
 void radio_apply_channel_set(const uint8_t *chans, uint8_t cnt);
 
+// CT BLE burst primitive (radio-owned: the NimBLE scanner configuration and
+// its result callback live here). Ensures the one-shot NimBLE init — the
+// exact same passive configuration RADIO_BLE entry uses — then runs ONE
+// blocking bounded passive scan. NimBLE-Arduino 1.4.1 takes SECONDS and
+// multiplies by 1000 internally. Returns the total advertisement hits the
+// result callback counted while ct_ble_burst_active was set. Does NOT touch
+// Wi-Fi: the caller (ct_ble_burst) owns the Wi-Fi/BLE time division.
+void ble_init_only();  // ct.cpp CT burst: bring BLE up without scanning
+void ble_shutdown();   // ct.cpp CT burst: supported NimBLEDevice::deinit(false)
+uint32_t ble_radio_burst(uint32_t seconds);
+
 // Mutable radio state (defined in radio.cpp)
 extern RadioMode currentRadioMode;
 extern int current_ch_idx;

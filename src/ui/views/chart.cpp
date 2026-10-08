@@ -610,26 +610,35 @@ static void drawStackedBars(uint32_t col_x, int split_y, int chart_start_y,
 // ==================== CT REAL-TIME SCREEN ====================
 // Top-band renderer over ctState (RADIO_CT). CT draws these bands and then
 // FALLS THROUGH into the shared bottom-pane traffic engine in
-// drawWaterfallChart(), which CT feeds via the ct_window_bytes delta branch.
-// Bands: persistent-device list (y18..161, 11pt single column, 8 rows ×
-// 18 px), SEP1 (y163), RF-env list (y165..222, 8pt, 6 rows × 10 px), SEP2
-// (y223), segmented timeline bar (y225..262, 38 px), SEP3 = the modes'
-// existing split_y at y263 (drawn by the shared engine), absolute traffic
-// chart y264..298. Lists redraw at 1 Hz or when env_seq/persist-count
-// change; the bar redraws fully each call (small region). No new fonts
-// (9/11pt glyphs already linked), no dynamic allocation, no caching of
-// strings. The open segment's class/mu/sigma live in ct.cpp file-statics
-// and are not visible here, so its row shows id/windows/duration only.
+// drawWaterfallChart(); CT's bottom pane is the two-lane renderer
+// (ct_render_two_lanes): Wi-Fi bytes per statistical window + BLE adv hits
+// per burst.
+// Bands: persistent-device list (y18..126, 11pt single column, 6 rows ×
+// 18 px), SEP1 (y127), RF-env list (y129..188, 8pt, 6 rows × 10 px), SEP2
+// (y191), segmented timeline bar (y193..230, 38 px), SEP3 (y232, the top of
+// the CT Wi-Fi lane; the shared engine's split_y is CT-overridden to this),
+// Wi-Fi traffic lane y233..265 (absolute bytes), lane divider y266, BLE
+// advertisement-hits lane y267..CHART_BOTTOM. The device band went from 8 to
+// 6 rows to fund the second lane; env rows and the 38 px timeline bar are
+// unchanged. Lists redraw at 1 Hz or when env_seq/persist-count change; the
+// bar redraws fully each call (small region). No new fonts (9/11pt glyphs
+// already linked), no dynamic allocation, no caching of strings. The open
+// segment's class/mu/sigma live in ct.cpp file-statics and are not visible
+// here, so its row shows id/windows/duration only.
 #define CT_PLIST_Y     18
 #define CT_PLIST_ROWH  18
-#define CT_PLIST_ROWS  8
-#define CT_SEP1_Y      163
-#define CT_ENV_Y       165
+#define CT_PLIST_ROWS  6
+#define CT_SEP1_Y      127
+#define CT_ENV_Y       129
 #define CT_ENV_ROWH    10
-#define CT_SEP2_Y      223
-#define CT_BAR_Y       225
+#define CT_SEP2_Y      191
+#define CT_BAR_Y       193
 #define CT_BAR_H       38
-#define CT_SEP3_Y      263     // == split_y (chart_start_y + 3/4 of chart area)
+#define CT_SEP3_Y      232     // CT's split_y override: top of the Wi-Fi lane
+#define CT_WLAN_TOP    233     // Wi-Fi lane (absolute bytes)
+#define CT_WLAN_BOT    265
+#define CT_BLE_DIV_Y   266     // lane divider
+#define CT_BLE_TOP     267     // BLE lane (advertisement hits)
 #define CT_VENDOR_MAX  9
 
 static void ctFmtAge(uint32_t sec, char* b, size_t n) {
@@ -912,6 +921,141 @@ void drawCtEnvList() {
     tft.setTextDatum(TL_DATUM);
 }
 
+// ==================== CT TWO-LANE BOTTOM PANE ====================
+// Wi-Fi lane (absolute bytes, existing traffic_history + scale tuple) above,
+// BLE lane (total advertisement hits per burst, own scale) below. One shared
+// timeline: current_x / h_index / eraser head advance exactly as before and
+// each render slot paints ONE column; the consumed slot type decides which
+// lane holds data at that column. The inactive lane gets a muted floor dot =
+// "not listening" (distinct from blank = genuine zero / not yet plotted).
+// BLE display-only: never touches CT statistics.
+#define CT_TAG_NONE 0
+#define CT_TAG_WIFI 1
+#define CT_TAG_BLE  2
+static uint16_t ble_history[240];   // total adv hits per BLE column
+static uint8_t  ct_lane_tag[240];   // per-column which lane observed
+static uint32_t ble_top = 10;       // BLE scale (same +20% convention as Wi-Fi)
+static uint32_t ble_true_max = 10;
+static uint16_t ble_peak = 0;
+
+static void ct_lane_bar(int x, int top, int bot, uint32_t v, uint32_t scale, uint16_t color) {
+    if (v == 0 || scale == 0) return;
+    int h = (int)(((double)v / (double)scale) * (bot - top));
+    int maxh = bot - top - 2;
+    if (h > maxh) h = maxh;
+    if (h < 1) h = 1;
+    tft.drawLine(x, bot, x, bot - h, color);
+    tft.drawLine(x + 1, bot, x + 1, bot - h, color);
+}
+
+static void ct_lane_dot(int x, int y) {
+    tft.fillRect(x, y, 2, 2, TFT_DARKGREY);
+}
+
+// Full redraw of both lanes (rescale or lane reset). Wi-Fi bars read the
+// existing traffic_history + absolute_max_traffic scale tuple; BLE bars read
+// ble_history + ble_top. Tags drive the null dots.
+static void ct_two_lanes_redraw() {
+    tft.fillRect(0, CT_WLAN_TOP, SCREEN_W, CHART_BOTTOM - CT_WLAN_TOP, TFT_BLACK);
+    tft.drawLine(0, CT_SEP3_Y, SCREEN_W, CT_SEP3_Y, COLOR_HOT_CHEST);
+    tft.drawLine(0, CT_BLE_DIV_Y, SCREEN_W, CT_BLE_DIV_Y, COLOR_HOT_CHEST);
+    for (int c = 0; c < 240; c++) {
+        int px = c * 2;
+        if (ct_lane_tag[c] == CT_TAG_WIFI) {
+            ct_lane_bar(px, CT_WLAN_TOP, CT_WLAN_BOT, traffic_history[c],
+                        absolute_max_traffic, COLOR_HOT_CHEST);
+            ct_lane_dot(px, CHART_BOTTOM - 3);       // BLE not listening
+        } else if (ct_lane_tag[c] == CT_TAG_BLE) {
+            ct_lane_dot(px, CT_WLAN_BOT - 2);        // Wi-Fi not listening
+            ct_lane_bar(px, CT_BLE_TOP, CHART_BOTTOM, ble_history[c],
+                        ble_top, TFT_CYAN);
+        }
+    }
+}
+
+// Per-render two-lane column update + labels. did_rescale comes from the
+// shared Wi-Fi scale bookkeeping (which CT still feeds via traffic_history);
+// BLE bookkeeping below may also trigger one.
+static void ct_render_two_lanes(bool did_rescale) {
+    int h = current_x / 2;
+    uint8_t slot = ct_last_render_slot();
+
+    if (slot == CT_RTYPE_WIFI) {
+        ct_lane_tag[h] = CT_TAG_WIFI;
+    } else if (slot == CT_RTYPE_BLE) {
+        ct_lane_tag[h] = CT_TAG_BLE;
+        ble_history[h] = (uint16_t)(ct_last_burst_hits() & 0xFFFF);
+        // Same bounded scale algorithm as the Wi-Fi lane, on BLE's own units.
+        uint32_t v = ble_history[h];
+        if (v > ble_top) {
+            ble_true_max = v;
+            ble_peak = h;
+            ble_top = v + (v / 5);
+            did_rescale = true;
+        } else {
+            if (v > ble_true_max) { ble_true_max = v; ble_peak = h; }
+            if (h == ble_peak && v < ble_true_max) {
+                ble_true_max = 0;
+                for (int i = 0; i < 240; i++)
+                    if (ble_history[i] > ble_true_max) { ble_true_max = ble_history[i]; ble_peak = i; }
+                uint32_t next = ble_true_max + (ble_true_max / 5);
+                if (next < 10) next = 10;
+                if (next < ble_top) { ble_top = next; did_rescale = true; }
+            }
+        }
+    } else {
+        ct_lane_tag[h] = CT_TAG_NONE;   // idle render (e.g. touch): nothing observed
+    }
+
+    if (did_rescale) {
+        ct_two_lanes_redraw();
+    } else {
+        // Current column only: data in the tagged lane, null dot in the other.
+        if (ct_lane_tag[h] == CT_TAG_WIFI) {
+            ct_lane_bar(current_x, CT_WLAN_TOP, CT_WLAN_BOT, traffic_history[h],
+                        absolute_max_traffic, COLOR_HOT_CHEST);
+            ct_lane_dot(current_x, CHART_BOTTOM - 3);
+        } else if (ct_lane_tag[h] == CT_TAG_BLE) {
+            ct_lane_dot(current_x, CT_WLAN_BOT - 2);
+            ct_lane_bar(current_x, CT_BLE_TOP, CHART_BOTTOM, ble_history[h],
+                        ble_top, TFT_CYAN);
+        }
+    }
+
+    // Re-draw the BLE divider across the eraser band: the shared overlays
+    // restore only SEP3 (split_y), so the divider would stay wiped behind
+    // the head until the next full redraw.
+    {
+        int w1 = SCREEN_W - current_x;
+        if (w1 >= 44) {
+            tft.drawFastHLine(current_x, CT_BLE_DIV_Y, 44, COLOR_HOT_CHEST);
+        } else {
+            tft.drawFastHLine(current_x, CT_BLE_DIV_Y, w1, COLOR_HOT_CHEST);
+            tft.drawFastHLine(0, CT_BLE_DIV_Y, 44 - w1, COLOR_HOT_CHEST);
+        }
+    }
+
+    // Lane labels + per-lane scale readouts, redrawn every render (the eraser
+    // head re-wipes them as it passes, same lifecycle as the old pane labels).
+    tft.setFreeFont(&UbuntuMono_Regular8pt7b);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(COLOR_HOT_CHEST);
+    int text_x = current_x + 6;
+    if (text_x > SCREEN_W - 40) text_x = SCREEN_W - 40;
+    char maxStr[16];
+    if (absolute_max_traffic < 1024) snprintf(maxStr, sizeof(maxStr), "%lu", (unsigned long)absolute_max_traffic);
+    else if (absolute_max_traffic < 1048576) snprintf(maxStr, sizeof(maxStr), "%luK", (unsigned long)(absolute_max_traffic / 1024));
+    else if (absolute_max_traffic < 1073741824) snprintf(maxStr, sizeof(maxStr), "%luM", (unsigned long)(absolute_max_traffic / 1048576));
+    else snprintf(maxStr, sizeof(maxStr), "%.1fG", (float)absolute_max_traffic / 1073741824.0);
+    tft.drawString(maxStr, text_x, CT_WLAN_TOP + 2);
+    tft.drawString("KIB", SCREEN_W - 30, CT_WLAN_TOP + 2);
+    tft.setTextColor(TFT_CYAN);
+    char bleStr[12];
+    snprintf(bleStr, sizeof(bleStr), "%lu", (unsigned long)ble_top);
+    tft.drawString(bleStr, text_x, CT_BLE_TOP + 2);
+    tft.drawString("HITS", SCREEN_W - 36, CT_BLE_TOP + 2);
+}
+
 void drawWaterfallChart() {
     // 1. Gate the legends (CT replaces them with its own screen below)
     if (currentRadioMode != RADIO_PCAP && currentRadioMode != RADIO_CT) {
@@ -930,6 +1074,11 @@ void drawWaterfallChart() {
 
     // FIX 3: Use the exact same 3/4 split for ALL modes to keep the bottom graph height identical
     int split_y = chart_start_y + (chart_area_height * 3) / 4;
+
+    // CT two-lane override: split_y becomes CT's SEP3 (top of the Wi-Fi lane)
+    // so the shared eraser/clear math below covers BOTH lanes; the Wi-Fi lane
+    // plot itself is handled by ct_render_two_lanes() with CT-local bounds.
+    if (currentRadioMode == RADIO_CT) split_y = CT_SEP3_Y;
 
     int ERASER_WIDTH = 44;
 
@@ -961,7 +1110,6 @@ void drawWaterfallChart() {
 
     // (the per-mode bar cursors now live inside drawStackedBars)
     uint32_t current_total_metric = 0;
-    static uint32_t ct_last_wb = 0;   // CT traffic-metric tracker (CT branch below)
 
     // --- CHART PLOTTING ---
     if (currentRadioMode == RADIO_WIFI) {
@@ -1024,15 +1172,14 @@ void drawWaterfallChart() {
                         sortOtherBytes, total_bytes, sortChannelCount - 1);
     }
     else if (currentRadioMode == RADIO_CT) {
-        // Absolute traffic metric: per-tick delta of the CT window byte
-        // accumulator (ct_window_bytes, ct.h). The CT engine zero-rolls it
-        // every 5 s (ct.cpp:639); on a roll this tick's volume is the
-        // pre-reset bytes (last_wb) plus the post-reset bytes (wb), which
-        // conserves total mass. Windows therefore appear as one full-window
-        // bar every ~5th tick — bursty but truthful.
-        uint32_t wb = ct_window_bytes;
-        current_total_metric = (wb >= ct_last_wb) ? (wb - ct_last_wb) : (wb + ct_last_wb);
-        ct_last_wb = wb;
+        // Slot-aware: only a WIFI slot carries Wi-Fi data. The lane plots the
+        // completed window's byte snapshot (ct_window_render_bytes) directly:
+        // the render fires in the same loop iteration as the close's zero-roll
+        // of ct_window_bytes, so a per-tick delta of the accumulator cannot
+        // recover the window mass. BLE/idle slots contribute nothing (the
+        // radio was off / no observation happened).
+        if (ct_last_render_slot() == CT_RTYPE_WIFI)
+            current_total_metric = ct_window_render_bytes();
     }
     static uint32_t last_rendered_leak_timestamp = 0;
     if (currentRadioMode == RADIO_PCAP) {
@@ -1237,9 +1384,17 @@ void drawWaterfallChart() {
         memcpy(last_seen_bssid, target_bssid, 6);
 
         memset(traffic_history, 0, sizeof(traffic_history));
-        ct_last_wb = 0;   // CT engine zeroes ct_window_bytes on exit; avoid a
-                          // stale-tracker spike on CT re-entry
         did_rescale = true;
+
+        // CT lane state: BLE history, per-column tags and the BLE scale must
+        // die with the mode entry so a re-entry starts a fresh timeline.
+        if (currentRadioMode == RADIO_CT) {
+            memset(ble_history, 0, sizeof(ble_history));
+            memset(ct_lane_tag, 0, sizeof(ct_lane_tag));
+            ble_top = 10;
+            ble_true_max = 10;
+            ble_peak = 0;
+        }
     }
 
     int h_index = current_x / 2;
@@ -1275,7 +1430,12 @@ void drawWaterfallChart() {
         }
     }
 
-    if (did_rescale) {
+    if (currentRadioMode == RADIO_CT) {
+        // CT two-lane bottom pane: consumes the shared scale bookkeeping
+        // above (traffic_history / absolute_max_traffic still drive the
+        // Wi-Fi lane) plus the BLE lane's own bounded scale.
+        ct_render_two_lanes(did_rescale);
+    } else if (did_rescale) {
         tft.fillRect(0, split_y + 1, SCREEN_W, CHART_BOTTOM - split_y, TFT_BLACK);
         tft.drawLine(0, split_y, SCREEN_W, split_y, COLOR_HOT_CHEST);
 
@@ -1327,7 +1487,8 @@ void drawWaterfallChart() {
         tft.setTextColor(COLOR_HOT_CHEST);
 
         // Gate the top pane percentages AND the time scale so they don't overwrite PCAP text
-        // (CT too: those labels would land on the segment bar / env list)
+        // (CT too: those labels would land on the segment bar / env list; CT
+        // draws its two lane labels inside ct_render_two_lanes() instead)
         if (currentRadioMode != RADIO_PCAP && currentRadioMode != RADIO_CT) {
             tft.drawString("100%", text_x, chart_start_y + 4);
             int mid_y = chart_start_y + ((split_y - chart_start_y) / 2);
@@ -1337,18 +1498,22 @@ void drawWaterfallChart() {
             else tft.drawString("|=2m", text_x, split_y - 15);
         }
 
-        char maxStr[16];
-        if (currentRadioMode == RADIO_BLE) {
-            snprintf(maxStr, sizeof(maxStr), "%lu", absolute_max_traffic);
-        } else {
-            if (absolute_max_traffic < 1024) snprintf(maxStr, sizeof(maxStr), "%lu", absolute_max_traffic);
-            else if (absolute_max_traffic < 1048576) snprintf(maxStr, sizeof(maxStr), "%luK", absolute_max_traffic / 1024);
-            else if (absolute_max_traffic < 1073741824) snprintf(maxStr, sizeof(maxStr), "%luM", absolute_max_traffic / 1048576);
-            else snprintf(maxStr, sizeof(maxStr), "%.1fG", (float)absolute_max_traffic / 1073741824.0);
-        }
+        // CT: lane labels/scales are drawn by ct_render_two_lanes(); skip the
+        // single-pane maxStr/"0" readouts here so they don't collide.
+        if (currentRadioMode != RADIO_CT) {
+            char maxStr[16];
+            if (currentRadioMode == RADIO_BLE) {
+                snprintf(maxStr, sizeof(maxStr), "%lu", absolute_max_traffic);
+            } else {
+                if (absolute_max_traffic < 1024) snprintf(maxStr, sizeof(maxStr), "%lu", absolute_max_traffic);
+                else if (absolute_max_traffic < 1048576) snprintf(maxStr, sizeof(maxStr), "%luK", absolute_max_traffic / 1024);
+                else if (absolute_max_traffic < 1073741824) snprintf(maxStr, sizeof(maxStr), "%luM", absolute_max_traffic / 1048576);
+                else snprintf(maxStr, sizeof(maxStr), "%.1fG", (float)absolute_max_traffic / 1073741824.0);
+            }
 
-        tft.drawString(maxStr, text_x, split_y + 4);
-        tft.drawString("0", text_x, CHART_BOTTOM - 12);
+            tft.drawString(maxStr, text_x, split_y + 4);
+            tft.drawString("0", text_x, CHART_BOTTOM - 12);
+        }
     }
 
     current_x += 2;

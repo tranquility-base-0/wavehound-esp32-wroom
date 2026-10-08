@@ -186,13 +186,14 @@ void loop() {
   uint16_t t_x = 0, t_y = 0;
   bool should_render = false;
   // CT waterfall advances on its statistical-window boundary, not per
-  // sweep: consume the window-close render request here (CT's delta logic
-  // turns the first render after the zero-roll into the full-window bar).
-  should_render |= ct_take_render_request();
+  // sweep: consume at most one typed render slot here (WIFI column first,
+  // then BLE column when the burst ran; each becomes its own chart column
+  // under the single shared cursor).
+  should_render |= (ct_take_render_slot() != CT_RTYPE_NONE);
 
   // 1. Check Touch inputs (State Controller)
   if (tft.getTouch(&t_x, &t_y)) {
-    should_render = handleTouchInputs(t_x, t_y, !touch_down_prev);
+    should_render = handleTouchInputs(t_x, t_y, !touch_down_prev) || should_render;
     touch_down_prev = true;
   } else {
     touch_down_prev = false;
