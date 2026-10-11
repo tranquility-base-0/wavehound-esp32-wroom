@@ -19,6 +19,13 @@
 #define CT_DIAG_TIMING   0   // [CT-TIMING] TEMPORARY: prints the F1 derivation
                             // at every ct_timing_apply() run. Measurement-only.
                             // Remove after diagnosis.
+#if CT_DIAG_BLE_GUARD
+// Stage-1 diagnostic: reads the NimBLE guard-rejection counter maintained by
+// the patched os_callout_timer_cb (npl_os_freertos.c). The macro is supplied
+// ONLY via build_flags (-DCT_DIAG_BLE_GUARD=1); with it undefined this block
+// compiles to nothing and the build is the guard-only variant.
+extern "C" uint32_t wh_guard_rejects;
+#endif
 
 // CT alternating BLE burst (display-only side channel). When 1, every CT
 // window close on the chart screen is followed by a bounded passive NimBLE
@@ -488,6 +495,16 @@ uint32_t ct_window_render_bytes() { return ct_render_wbytes; }
 // burst. No timing machinery is touched.
 static bool ct_ble_burst(uint32_t *hits_out) {
   *hits_out = 0;
+#if CT_DIAG_BLE_GUARD
+  static uint32_t last_guard_rejects = 0;
+  uint32_t now_rejects = __atomic_load_n(&wh_guard_rejects, __ATOMIC_RELAXED);
+  if (now_rejects != last_guard_rejects) {
+    Serial.printf("[CT-BLE-GUARD] +%u total=%u\n",
+                  (unsigned)(now_rejects - last_guard_rejects),
+                  (unsigned)now_rejects);
+    last_guard_rejects = now_rejects;
+  }
+#endif
   // Display-only: skip off-screen. Off the chart screen the data has no
   // consumer and every cycle would only churn the radio and block menus.
   if (currentState != SCREEN_CHART) return false;
