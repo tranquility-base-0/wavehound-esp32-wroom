@@ -400,8 +400,14 @@ close (~5 s), so the visible time scale is independent of the selected channel
 count. The traffic band under the waterfall shows the per-window byte delta —
 every received frame of at least 24 bytes (signalled length including FCS) that
 arrived during the window, zero-rolled and conserved across window boundaries —
-so its magnitude is comparable to the per-interval traffic charts in the other
-hopping modes. Changing the channel set in CT (SELECT CH) is deferred to a safe window
+counting every qualifying frame type: management (e.g. beacons), control, and
+data alike. The traffic charts in the other hopping modes measure data frames
+only, and bar heights in every mode are scaled against a rolling maximum tracked
+within that mode (reset when the mode is entered), not against any common
+absolute-volume measure, so heights are not directly comparable between modes.
+In the same environment and on the same channel set, CT's bars can therefore be
+taller, and recurring management traffic such as beacons can make them appear
+steadier, than the data-only charts. Changing the channel set in CT (SELECT CH) is deferred to a safe window
 boundary — the new set is applied at the next window close rather than mid-window,
 so windows remain composed of complete sweeps. A window closing off-screen or
 during a long processing stall is discarded by the validity rule.
