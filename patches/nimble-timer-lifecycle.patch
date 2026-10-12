@@ -1,0 +1,108 @@
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs.c
+@@ -479,6 +479,12 @@
+     }
+ }
+ 
++void
++ble_hs_timer_stop(void)
++{
++    ble_npl_callout_stop(&ble_hs_timer);
++}
++
+ static void
+ ble_hs_timer_sched(int32_t ticks_from_now)
+ {
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs.c
+@@ -426,6 +426,11 @@
+ {
+     int32_t ticks_until_next;
+ 
++    if (ble_hs_enabled_state != BLE_HS_ENABLED_STATE_ON ||
++        ble_hs_sync_state == BLE_HS_SYNC_STATE_BRINGUP) {
++        return;
++    }
++
+     switch (ble_hs_sync_state) {
+     case BLE_HS_SYNC_STATE_GOOD:
+ #if NIMBLE_BLE_CONNECT
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs_priv.h
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/nimble/host/src/ble_hs_priv.h
+@@ -129,6 +129,7 @@
+ void ble_hs_unlock(void);
+ void ble_hs_hw_error(uint8_t hw_code);
+ void ble_hs_timer_resched(void);
++void ble_hs_timer_stop(void);
+ void ble_hs_notifications_sched(void);
+ struct ble_npl_eventq *ble_hs_evq_get(void);
+ void ble_hs_stop_init(void);
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/npl/freertos/src/npl_os_freertos.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/npl/freertos/src/npl_os_freertos.c
+@@ -1726,6 +1726,9 @@
+     }
+ }
+ #else
++#if CT_DIAG_BLE_GUARD
++uint32_t wh_guard_rejects; /* C linkage; read by ct.cpp via extern "C" */
++#endif
+ static void
+ os_callout_timer_cb(TimerHandle_t timer)
+ {
+@@ -1733,6 +1736,13 @@
+ 
+     co = pvTimerGetTimerID(timer);
+     assert(co);
++
++    if (timer != co->handle) {
++#if CT_DIAG_BLE_GUARD
++        __atomic_fetch_add(&wh_guard_rejects, 1, __ATOMIC_RELAXED);
++#endif
++        return;
++    }
+ 
+     if (co->evq) {
+         ble_npl_eventq_put(co->evq, &co->ev);
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/npl/freertos/src/npl_os_freertos.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/npl/freertos/src/npl_os_freertos.c
+@@ -1795,7 +1795,7 @@
+     xTimerDelete(co->handle, portMAX_DELAY);
+     ble_npl_event_deinit(&co->ev);
+ #endif
+-    memset(co, 0, sizeof(struct ble_npl_callout));
++    co->handle = NULL;
+ }
+ 
+ ble_npl_error_t
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/nimble/src/nimble_port.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/nimble/src/nimble_port.c
+@@ -112,8 +112,15 @@
+     }
+ #endif // Arduino disabled
+ 
+-    /* Initialize default event queue */
+-    ble_npl_eventq_init(&g_eventq_dflt);
++    /* Initialize default event queue (persists across lifecycles) */
++    if (g_eventq_dflt.q) {
++        struct ble_npl_event *ev;
++        while ((ev = ble_npl_eventq_get(&g_eventq_dflt, 0)) != NULL) {
++            (void)ev; /* discard-only startup drain: never dispatched */
++        }
++    } else {
++        ble_npl_eventq_init(&g_eventq_dflt);
++    }
+ 
+     os_msys_init();
+ 
+--- a/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/nimble/src/nimble_port.c
++++ b/.pio/libdeps/esp32dev/NimBLE-Arduino/src/nimble/porting/nimble/src/nimble_port.c
+@@ -145,7 +145,8 @@
+         return ESP_FAIL;
+     }
+ #endif // Arduino disabled
+-    ble_npl_eventq_deinit(&g_eventq_dflt);
++    /* BLE timer lifecycle (stage 1): the default event queue persists
++     * across lifecycles; it is drained at esp_nimble_init. */
+ #endif
+     ble_hs_deinit();
+ 
