@@ -690,8 +690,8 @@ void drawDeviceList() {
 
         char macStr[18];
         snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-                 sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2],
-                 sessionBleData[i].mac[3], sessionBleData[i].mac[4], sessionBleData[i].mac[5]);
+                 sessionBleData[i].mac[5], sessionBleData[i].mac[4], sessionBleData[i].mac[3],
+                 sessionBleData[i].mac[2], sessionBleData[i].mac[1], sessionBleData[i].mac[0]);
 
         snprintf(line1, sizeof(line1), "%-18.18s %13s %4d %4.0fm %5u",
                  safeName, ageCombo, sessionBleData[i].rssi,

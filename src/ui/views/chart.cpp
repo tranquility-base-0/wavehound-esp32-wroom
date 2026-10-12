@@ -386,8 +386,8 @@ void drawPersistentTopN() {
                 display_name[26] = '\0';
             } else {
                 snprintf(display_name, sizeof(display_name), "%02X:%02X:%02X:%02X:%02X:%02X",
-                         sessionBleData[i].mac[0], sessionBleData[i].mac[1], sessionBleData[i].mac[2],
-                         sessionBleData[i].mac[3], sessionBleData[i].mac[4], sessionBleData[i].mac[5]);
+                         sessionBleData[i].mac[5], sessionBleData[i].mac[4], sessionBleData[i].mac[3],
+                         sessionBleData[i].mac[2], sessionBleData[i].mac[1], sessionBleData[i].mac[0]);
             }
         }
         else if (currentRadioMode == RADIO_AP) {
