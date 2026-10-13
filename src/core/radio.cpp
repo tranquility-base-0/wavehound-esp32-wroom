@@ -164,11 +164,10 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
                     tempPriority = 2; // Priority 2: Known Tracker Type
                 }
                 else if (resolvedCompany != nullptr && tempPriority < 1) {
-                    if (mfg.length() >= 3) {
-                        snprintf(tempName, sizeof(tempName), "%.12s:0x%02X", resolvedCompany, (uint8_t)mfg[2]);
-                    } else {
-                        snprintf(tempName, sizeof(tempName), "%.24s", resolvedCompany);
-                    }
+                    /* Company ID proves the manufacturer only — the payload
+                     * byte is opaque internal content, not a product or
+                     * device identifier, so no per-device suffix is added. */
+                    snprintf(tempName, sizeof(tempName), "%.24s", resolvedCompany);
                     tempPriority = 1; // Priority 1: Manufacturer Fallback
                 }
             }
