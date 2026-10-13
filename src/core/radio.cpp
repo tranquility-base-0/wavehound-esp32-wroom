@@ -45,6 +45,37 @@ char target_ssid[33] = {0};
 
 static bool ble_initialized = false;
 
+// Evidence tiers for tracker classifications. Enum numeric order carries no
+// strength meaning; this mapping is the single authority for precedence.
+//   SPECIFIC: structured manufacturer signature (company ID + type byte)
+//             naming a device family or protocol.
+//   GENERIC:  broad evidence shared by many devices — Tile matches its
+//             company ID with any payload; Eddystone is the 0xFEAA protocol
+//             family shared by all Eddystone frame types (UID/TLM/URL/EID).
+static uint8_t tracker_tier(uint8_t t) {
+    switch (t) {
+        case TRACKER_APPLE_FINDMY:
+        case TRACKER_APPLE_IBEACON:
+        case TRACKER_GOOGLE_FASTPAIR:
+        case TRACKER_SAMSUNG_SMARTTAG:
+        case TRACKER_MS_SWIFTPAIR:
+            return 2; // specific
+        case TRACKER_TILE:
+        case TRACKER_EDDYSTONE:
+            return 1; // generic
+        default:
+            return 0; // TRACKER_NONE
+    }
+}
+
+// Accept the candidate classification only when it strengthens the stored one:
+// NONE -> anything, generic -> specific. Lower or equal-tier conflicting
+// evidence never overwrites (prevents oscillation and Eddystone downgrades).
+static uint8_t tracker_accept(uint8_t stored, uint8_t candidate) {
+    if (tracker_tier(candidate) > tracker_tier(stored)) return candidate;
+    return stored;
+}
+
 class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
   void onResult(BLEAdvertisedDevice* advertisedDevice) {
     // CT BLE burst counter: total advertisement callbacks during a CT burst.
@@ -154,7 +185,9 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
             uint16_t uuid16 = sdUUID.getNative()->u16.value;
 
             if (uuid16 == 0xFEAA) {
-                newTrackerType = TRACKER_EDDYSTONE;
+                // Generic evidence: never demotes a specific manufacturer
+                // signature gathered earlier in this same advertisement.
+                newTrackerType = tracker_accept(newTrackerType, TRACKER_EDDYSTONE);
 
                 // Only decode the URL if we don't have a real Broadcast Name (Priority 4)
                 if (tempPriority < 4) {
@@ -205,9 +238,12 @@ class BLEPassiveCallbacks: public BLEAdvertisedDeviceCallbacks {
                 liveBleData[i].namePriority = tempPriority;
             }
 
-            if (newTrackerType != TRACKER_NONE) liveBleData[i].trackerType = newTrackerType;
-            if (newAppearanceId != 0) liveBleData[i].appearanceId = newAppearanceId;
-            if (newServiceId != 0) liveBleData[i].serviceId = newServiceId;
+            // Tier-gated classification: specific beats generic beats none;
+            // equal-tier conflicting evidence preserves the stored value.
+            // Appearance and service latch: first valid nonzero wins.
+            liveBleData[i].trackerType = tracker_accept(liveBleData[i].trackerType, newTrackerType);
+            if (newAppearanceId != 0 && liveBleData[i].appearanceId == 0) liveBleData[i].appearanceId = newAppearanceId;
+            if (newServiceId != 0 && liveBleData[i].serviceId == 0) liveBleData[i].serviceId = newServiceId;
 
             found = true;
             break;
